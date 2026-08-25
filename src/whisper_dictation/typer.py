@@ -6,8 +6,91 @@ import logging
 import sys
 import threading
 
+from .caret_context import FocusedControlDiagnostic, get_focused_control_diagnostic
+
 log = logging.getLogger(__name__)
 _typing_lock = threading.Lock()
+
+
+def _is_modern_notepad_window(target: FocusedControlDiagnostic) -> bool:
+    return (
+        target.foreground_executable.casefold() == "notepad.exe"
+        and target.foreground_window_class.casefold() == "notepad"
+    )
+
+
+def _is_exact_writable_notepad_control(
+    target: FocusedControlDiagnostic,
+) -> bool:
+    return (
+        _is_modern_notepad_window(target)
+        and target.class_name.casefold() == "richeditd2dpt"
+        and target.native_window_handle > 0
+        and target.has_keyboard_focus is True
+        and target.is_enabled is True
+        and target.is_offscreen is False
+        and target.read_only is False
+    )
+
+
+def _replace_windows_notepad_selection(
+    text: str,
+    target: FocusedControlDiagnostic,
+) -> bool:
+    """Replace the exact focused native Notepad selection with undo support."""
+    import ctypes
+    from ctypes import wintypes
+
+    handle = target.native_window_handle
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.IsWindow.argtypes = (wintypes.HWND,)
+    user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowEnabled.argtypes = (wintypes.HWND,)
+    user32.IsWindowEnabled.restype = wintypes.BOOL
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetClassNameW.argtypes = (
+        wintypes.HWND,
+        wintypes.LPWSTR,
+        ctypes.c_int,
+    )
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.SendMessageTimeoutW.argtypes = (
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes.POINTER(ctypes.c_size_t),
+    )
+    user32.SendMessageTimeoutW.restype = wintypes.LPARAM
+
+    if not user32.IsWindow(handle) or not user32.IsWindowEnabled(handle):
+        return False
+    foreground = user32.GetForegroundWindow()
+    if not foreground or user32.GetAncestor(handle, 2) != foreground:  # GA_ROOT
+        return False
+    class_name = ctypes.create_unicode_buffer(256)
+    if not user32.GetClassNameW(handle, class_name, len(class_name)):
+        return False
+    if class_name.value.casefold() != "richeditd2dpt":
+        return False
+
+    native_text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+    buffer = ctypes.create_unicode_buffer(native_text)
+    result = ctypes.c_size_t()
+    sent = user32.SendMessageTimeoutW(
+        handle,
+        0x00C2,  # EM_REPLACESEL
+        1,  # replacement can be undone
+        ctypes.cast(buffer, ctypes.c_void_p).value,
+        0x0001 | 0x0002,  # SMTO_BLOCK | SMTO_ABORTIFHUNG
+        2000,
+        ctypes.byref(result),
+    )
+    return bool(sent)
 
 
 def _type_windows(text: str) -> None:
@@ -87,13 +170,46 @@ def _type_windows(text: str) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def type_text(text: str) -> None:
+def type_text(
+    text: str,
+    expected_target: FocusedControlDiagnostic | None = None,
+) -> None:
     """Type text into the focused application."""
     if not text:
         return
     log.debug("Typing %d chars", len(text))
     with _typing_lock:
         if sys.platform == "win32":
+            current_target = get_focused_control_diagnostic()
+            expected_notepad = (
+                expected_target is not None
+                and _is_modern_notepad_window(expected_target)
+            )
+            current_notepad = _is_modern_notepad_window(current_target)
+            if expected_notepad:
+                if (
+                    not _is_exact_writable_notepad_control(current_target)
+                    or current_target.native_window_handle
+                    != expected_target.native_window_handle
+                ):
+                    raise RuntimeError(
+                        "Focused Notepad control changed before text injection"
+                    )
+                if not _replace_windows_notepad_selection(text, current_target):
+                    raise RuntimeError("Focused Notepad native replacement failed")
+                return
+            if current_notepad:
+                if expected_target is not None:
+                    raise RuntimeError(
+                        "Focus changed to Notepad before text injection"
+                    )
+                if not _is_exact_writable_notepad_control(current_target):
+                    raise RuntimeError(
+                        "Focused Notepad native conditions are unavailable"
+                    )
+                if not _replace_windows_notepad_selection(text, current_target):
+                    raise RuntimeError("Focused Notepad native replacement failed")
+                return
             _type_windows(text)
         else:
             raise RuntimeError(f"Unsupported platform: {sys.platform}")

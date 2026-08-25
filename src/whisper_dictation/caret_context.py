@@ -93,6 +93,7 @@ class CaretContext:
     selection_text: str = ""
     before_char: str = ""
     after_char: str = ""
+    target: FocusedControlDiagnostic | None = None
 
     @property
     def has_selection(self) -> bool:
@@ -467,31 +468,53 @@ def get_caret_context() -> CaretContext:
     Unsupported controls and probe failures return an unavailable context so the
     caller can retain its established conservative fallback.
     """
+    executable_name, window_class = _foreground_target_identity()
     try:
         import uiautomation as auto
 
         with auto.UIAutomationInitializerInThread():
             control = auto.GetFocusedControl()
             if control is None or not _is_focused_writable_edit_control(control, auto):
-                executable_name, window_class = _foreground_target_identity()
                 return CaretContext(
                     injection_allowed=is_allowlisted_unavailable_context_target(
                         executable_name,
                         window_class,
-                    )
+                    ),
+                    target=FocusedControlDiagnostic(
+                        foreground_executable=executable_name,
+                        foreground_window_class=window_class,
+                    ),
                 )
 
             pattern = _get_pattern(control, auto.PatternId.TextPattern)
             value_pattern = _get_pattern(control, auto.PatternId.ValuePattern)
+            target = _focused_control_diagnostic(
+                control,
+                auto,
+                executable_name,
+                window_class,
+                pattern,
+                value_pattern,
+            )
             if pattern is None and value_pattern is not None:
-                return _value_pattern_context(control, value_pattern)
+                context = _value_pattern_context(control, value_pattern)
+                return CaretContext(
+                    available=context.available,
+                    injection_allowed=context.injection_allowed,
+                    document_text=context.document_text,
+                    line_text=context.line_text,
+                    selection_text=context.selection_text,
+                    before_char=context.before_char,
+                    after_char=context.after_char,
+                    target=target,
+                )
             if pattern is None:
-                executable_name, window_class = _foreground_target_identity()
                 return CaretContext(
                     injection_allowed=is_allowlisted_unavailable_context_target(
                         executable_name,
                         window_class,
-                    )
+                    ),
+                    target=target,
                 )
 
             selections = pattern.GetSelection()
@@ -549,15 +572,21 @@ def get_caret_context() -> CaretContext:
                 selection_text=selection_text,
                 before_char=before_text[-1:] if before_text else "",
                 after_char=after_text[:1] if after_text else "",
+                target=target,
             )
     except Exception:
-        executable_name, window_class = _foreground_target_identity()
         injection_allowed = is_allowlisted_unavailable_context_target(
             executable_name,
             window_class,
         )
         log.debug("Focused text context unavailable", exc_info=True)
-        return CaretContext(injection_allowed=injection_allowed)
+        return CaretContext(
+            injection_allowed=injection_allowed,
+            target=FocusedControlDiagnostic(
+                foreground_executable=executable_name,
+                foreground_window_class=window_class,
+            ),
+        )
 
 
 def should_capitalize_at_caret() -> bool:

@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -158,18 +159,34 @@ def apply_backtick_commands(text: str, active: bool) -> tuple[str, bool]:
     return "".join(output).strip(" \t"), active
 
 
-def apply_quote_commands(text: str, pending_close: bool) -> tuple[str, bool]:
+@dataclass(frozen=True)
+class QuoteState:
+    """Smart-quote state shared by committed phrases in one recording."""
+
+    open: bool = False
+    pending_close: bool = False
+
+
+def apply_quote_commands(text: str, state: QuoteState) -> tuple[str, QuoteState]:
     """Resolve smart-quote commands, including close/quote split across phrases."""
     if text == _PENDING_CLOSE_COMMAND:
-        return "", True
+        if state.open:
+            return "", QuoteState(open=True, pending_close=True)
+        return "close", state
 
-    if pending_close:
+    quote_open = state.open
+    if state.pending_close:
         stripped = text.lstrip()
         if stripped.startswith(_OPEN_QUOTE_COMMAND):
-            text = _CLOSE_QUOTE_COMMAND + stripped[len(_OPEN_QUOTE_COMMAND):]
+            remainder = stripped[len(_OPEN_QUOTE_COMMAND):].lstrip()
+            separator = (
+                " "
+                if remainder and remainder[0] not in ".,!?;:%)]}\u2019\u201d\u2014\u2026"
+                else ""
+            )
+            text = _CLOSE_QUOTE_COMMAND + separator + remainder
         else:
             text = "close " + text
-        pending_close = False
 
     output: list[str] = []
     skip_spaces = False
@@ -183,13 +200,15 @@ def apply_quote_commands(text: str, pending_close: bool) -> tuple[str, bool]:
                 output.append(" ")
             output.append("“")
             skip_spaces = True
+            quote_open = True
         elif character == _CLOSE_QUOTE_COMMAND:
             while output and output[-1].isspace():
                 output.pop()
             output.append("”")
+            quote_open = False
         else:
             output.append(character)
-    return "".join(output).strip(" \t"), pending_close
+    return "".join(output).strip(" \t"), QuoteState(open=quote_open)
 
 
 def _play_toggle_tone(active: bool) -> None:
@@ -298,7 +317,7 @@ class DictationDaemon:
         self._caps_active: bool = False
         self._cap_next: bool = False
         self._backtick_active: bool = False
-        self._pending_close_quote: bool = False
+        self._quote_state = QuoteState()
 
     def _create_ws_engine(
         self, **kwargs: object,
@@ -396,7 +415,8 @@ class DictationDaemon:
                 self._prepare_ws_injection(
                     cleaned,
                     caret_context=caret_context,
-                )
+                ),
+                expected_target=caret_context.target,
             )
             log.debug("WS typed: %d chars", len(cleaned))
         except Exception:
@@ -528,9 +548,9 @@ class DictationDaemon:
                     text,
                     self._backtick_active,
                 )
-                text, self._pending_close_quote = apply_quote_commands(
+                text, self._quote_state = apply_quote_commands(
                     text,
-                    self._pending_close_quote,
+                    self._quote_state,
                 )
             if text:
                 injection = (
@@ -541,7 +561,7 @@ class DictationDaemon:
                     if self.streaming
                     else text.replace(EXPLICIT_DOT_COMMAND, ".") + " "
                 )
-                type_text(injection)
+                type_text(injection, expected_target=caret_context.target)
                 log.debug("Typed: %d chars", len(text))
             elif not self.streaming:
                 log.info("No speech detected")
@@ -588,7 +608,8 @@ class DictationDaemon:
                         self._prepare_ws_injection(
                             cleaned,
                             caret_context=caret_context,
-                        )
+                        ),
+                        expected_target=caret_context.target,
                     )
                 except PathologicalDecoderOutput as error:
                     _notify_pathological_decoder_output(error)
@@ -626,7 +647,7 @@ class DictationDaemon:
                     return
                 text = normalize_spoken_numbers(text)
                 text = self._apply_user_conversions(text)
-                type_text(text + " ")
+                type_text(text + " ", expected_target=caret_context.target)
                 log.debug("WS batch typed: %d chars", len(text))
             else:
                 log.info("No speech detected (WS batch)")
@@ -651,7 +672,7 @@ class DictationDaemon:
             self._caps_active = False
             self._cap_next = False
             self._backtick_active = False
-            self._pending_close_quote = False
+            self._quote_state = QuoteState()
         log.info("Recording started (use_ws=%s, streaming=%s, engine=%s)",
                  self._use_ws, self.streaming, self.config.engine.type)
 
