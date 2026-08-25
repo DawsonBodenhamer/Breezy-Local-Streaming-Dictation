@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $resolved = (Resolve-Path -LiteralPath $Root).Path
 $required = @(
-    'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'pyproject.toml',
+    'README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'pyproject.toml',
     'requirements.in', 'requirements.lock', 'requirements.cuda.in',
     'requirements.cuda.lock', 'setup.ps1',
     'config\config.example.toml', 'config\runtime.example.env', 'windows\supervisor.ps1',
