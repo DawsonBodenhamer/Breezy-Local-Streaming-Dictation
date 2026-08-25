@@ -476,14 +476,23 @@ def local_head() -> str:
 
 
 def local_tag_target(tag: str) -> str | None:
-    result = subprocess.run(
-        git_args("rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"),
+    reference = f"refs/tags/{tag}"
+    presence = subprocess.run(
+        git_args("show-ref", "--verify", "--quiet", reference),
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
     )
-    if result.returncode == 1:
+    if presence.returncode == 1:
         return None
+    if presence.returncode:
+        raise ReleaseError(f"Could not inspect local tag {tag}: {presence.stderr.strip()}")
+    result = subprocess.run(
+        git_args("rev-parse", "--verify", f"{reference}^{{commit}}"),
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
     if result.returncode:
         raise ReleaseError(f"Could not inspect local tag {tag}: {result.stderr.strip()}")
     return result.stdout.strip()
