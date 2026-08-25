@@ -1,0 +1,33 @@
+[server]
+url = "http://127.0.0.1:8000"
+model = ""
+language = "en"
+timeout = 30
+prompt = "Dictate naturally and preserve spoken punctuation commands."
+temperature = 0.0
+hotwords = "period, comma, colon, semicolon, question mark, exclamation mark, new line, new paragraph"
+
+[hotkey]
+binding = "ctrl+alt+shift+f24"
+mode = "toggle"
+
+[vad]
+threshold = 0.45
+silence_ms = 750
+min_speech_ms = 75
+max_speech_s = 90.0
+pre_speech_ms = 750
+
+[audio]
+sample_rate = 16000
+channels = 1
+device = -1
+
+[engine]
+type = "local"
+compute_type = "float16"
+device = "cuda"
+
+[websocket]
+reconnect_attempts = 3
+reconnect_delay = 1.0

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breezy-local-streaming-dictation"
+version = "0.1.0"
+description = "Fast local streaming dictation for Windows"
+requires-python = ">=3.12,<3.13"
+license = { file = "LICENSE" }
+dependencies = [
+  "faster-whisper-dictation==0.2.0",
+  "whisperlivekit==0.2.24",
+  "uiautomation==2.0.29",
+  "numba>=0.61",
+]
+
+[project.optional-dependencies]
+cuda = [
+  "nvidia-cublas-cu12==12.9.2.10",
+  "nvidia-cuda-nvrtc-cu12==12.9.86",
+  "nvidia-cudnn-cu12==9.25.0.15",
+]
+
+[project.scripts]
+breezy-local-streaming-dictation = "whisper_dictation.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

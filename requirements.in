@@ -1,0 +1,8 @@
+faster-whisper-dictation==0.2.0
+whisperlivekit==0.2.24
+uiautomation==2.0.29
+setuptools==80.9.0
+wheel==0.45.1
+# Prevent the unconstrained librosa dependency from resolving to an obsolete
+# Python <3.10 Numba build under this uv configuration.
+numba>=0.61
