@@ -11,11 +11,11 @@
 
 ---
 
-<img src="assets/breezy_local_streaming_dictation_icon_hd.png" align="left" width="36%" alt="Gold microphone with streaming voice waves">
+<img src="assets/breezy_local_streaming_dictation_icon_hd.png" align="left" width="50%" alt="Gold microphone with streaming voice waves">
 
 ## Why I made it
 
-The dictation tools I found either came with another subscription or made me record first and wait for the result. Built-in Windows dictation also missed too many words, especially names and technical terms. In side-by-side tests using the same spoken phrase, the WhisperLiveKit dictation model made far fewer mistakes. I wanted that accuracy in something local that put words on screen while I spoke, let me keep typing, understood punctuation, and learned my vocabulary through corrections I control.
+The dictation tools I found either came with another subscription or made me record first and wait for the result. Built-in Windows dictation also missed too many words, especially names and technical terms. In side-by-side tests using the same spoken phrase, this WhisperLiveKit dictation model made far fewer mistakes. I wanted that accuracy in something local that put words on screen while I spoke, let me keep typing, understood punctuation, and learned my vocabulary through easily accessible settings.
 
 <br clear="left">
 
