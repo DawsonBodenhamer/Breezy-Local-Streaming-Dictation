@@ -15,6 +15,8 @@ $required = @(
     'windows\list_microphones.py', 'windows\startup_hidden.vbs',
     'windows\text_conversion_manager.py',
     'assets\breezy_local_streaming_dictation_icon_hd.png',
+    'assets\local_dictation_start.wav',
+    'assets\local_dictation_stop.wav',
     'assets\tray_menu.png',
     'licenses\faster-whisper-dictation-MIT.txt',
     'src\whisper_dictation\__init__.py',
