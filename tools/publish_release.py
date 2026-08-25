@@ -501,7 +501,7 @@ def local_tag_target(tag: str) -> str | None:
 def remote_tag_target(tag: str) -> str | None:
     result = run_gh("api", f"repos/{GITHUB_REPOSITORY}/commits/{tag}")
     if result.returncode:
-        if "404" in result.stderr:
+        if "404" in result.stderr or ("422" in result.stderr and "No commit found" in result.stderr):
             return None
         raise ReleaseError(f"Could not inspect remote tag {tag}: {result.stderr.strip()}")
     try:
