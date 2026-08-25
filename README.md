@@ -44,10 +44,7 @@ The dictation tools I found either came with another subscription or made me rec
 
 ## Performance
 
-WhisperLiveKit's default `large-v3-turbo` model is the reason this feels both quick and accurate:
-it offers excellent transcription quality without the slower pace of the full
-large model. If your GPU has less available memory, setup also accepts smaller
-English models.
+WhisperLiveKit's default `large-v3-turbo` model is the reason this feels both quick and accurate: it offers excellent transcription quality without the slower pace of the full large model. NVIDIA CUDA is optional acceleration; systems without a compatible NVIDIA GPU can run the same transcription model through the supported CPU INT8 fallback. CPU inference is usually slower, so setup also accepts smaller English models when responsiveness or available memory matters more than maximum accuracy.
 
 | Model and approximate VRAM | What to expect |
 |---|---|
@@ -56,9 +53,7 @@ English models.
 | **`small.en`** — 2 GB | A strong balance for limited hardware |
 | **`base.en`** — 1 GB | Faster and lighter, with a larger accuracy tradeoff |
 
-Memory figures are approximate and real usage varies by hardware. See the
-[WhisperLiveKit model guide](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/docs/default_and_custom_models.md)
-for the upstream model comparisons.
+Memory figures are approximate and real usage varies by hardware. See the [WhisperLiveKit model guide](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/docs/default_and_custom_models.md) for the upstream model comparisons. The VRAM figures apply to GPU acceleration; CPU mode uses system memory instead.
 
 ## Start in four steps
 
@@ -79,15 +74,11 @@ for the upstream model comparisons.
    powershell -ExecutionPolicy Bypass -File .\setup.ps1
    ```
 
-Setup guides you through the install location, model storage, compute mode, microphone,
-and startup preference. The activation hotkey starts as `Win+H` and can be changed from
-the tray. Running setup again keeps your text conversions intact.
+Setup guides you through the install location, model storage, compute mode, microphone, and startup preference. **Automatic** uses NVIDIA CUDA when it is available and falls back to CPU INT8 otherwise; you can also select either mode explicitly. The activation hotkey starts as `Win+H` and can be changed from the tray. Running setup again keeps your text conversions intact.
 
 ## Your first sentence
 
-Choose a microphone from the tray, focus an editable text field, and press your
-selected activation hotkey (`Win+H` by default). Speak naturally, then press it again
-to finish. The tray icon changes while you are speaking.
+Choose a microphone from the tray, focus an editable text field, and press your selected activation hotkey (`Win+H` by default). Speak naturally, then press it again to finish. The tray icon changes while you are speaking.
 
 ## Everyday controls
 
@@ -130,26 +121,28 @@ to finish. The tray icon changes while you are speaking.
 
 ### Personal text conversions
 
-Tell dictation what you expect to say and what should appear instead. You can choose
-whether capitalization matters and whether the phrase must appear as separate words.
-Changes take effect without restarting dictation.
+Tell dictation what you expect to say and what should appear instead. You can choose whether capitalization matters and whether the phrase must appear as separate words. Changes take effect without restarting dictation.
 
 ## What you need
 
 | Requirement | Supported setup |
 |---|---|
 | Operating system | 64-bit Windows 11 |
-| GPU | NVIDIA GPU with current drivers |
-| Recommended VRAM | 8 GB or more for the default model |
+| Compute | Automatic, NVIDIA CUDA, or CPU INT8 |
+| NVIDIA acceleration | Optional; requires a compatible NVIDIA GPU with current drivers |
+| CPU fallback | Supported on compatible x86-64 systems with AMD, Intel, or no dedicated GPU |
+| Recommended VRAM | 8 GB or more for the default model when using NVIDIA CUDA |
 | Runtime | Python 3.12 with Tcl/Tk |
 | Hotkey | AutoHotkey v2 |
 | Hardware | Working microphone and enough space for the chosen model |
 
+## AMD or Intel GPU?
+
+Breezy supports machines with AMD or Intel graphics through CPU INT8; it does not currently accelerate transcription on those GPUs. Advanced users can use the upstream [whisper.cpp Vulkan instructions](https://github.com/ggml-org/whisper.cpp#vulkan-gpu-support) as a theoretical cross-vendor starting point. This route is unsupported and unvalidated here: it would require you to replace Breezy's transcription backend and model integration, not select another built-in compute option.
+
 ## Privacy
 
-Your microphone audio is processed on your computer. Dictated text and personal
-conversion rules stay local. Logs are stored in
-`%LOCALAPPDATA%\breezy_local_streaming_dictation\logs`.
+Your microphone audio is processed on your computer. Dictated text and personal conversion rules stay local. Logs are stored in `%LOCALAPPDATA%\breezy_local_streaming_dictation\logs`.
 
 <details>
 <summary><strong>Common fixes</strong></summary>
@@ -159,7 +152,8 @@ conversion rules stay local. Logs are stored in
 | No tray icon | Rerun setup and choose **Start dictation now** at the final step. |
 | Wrong microphone | Select **Refresh microphone list**, then choose the input again. |
 | No text appears | Confirm the destination is editable and focused, then inspect the local logs. |
-| CUDA or model error | Update the NVIDIA driver and rerun setup. |
+| CUDA or model error | Update the NVIDIA driver, or rerun setup and choose **CPU**. |
+| CPU transcription is too slow | Rerun setup with a smaller English model. |
 | Hotkey does nothing | Confirm AutoHotkey v2 is installed, then restart dictation. |
 
 </details>
@@ -170,10 +164,8 @@ conversion rules stay local. Logs are stored in
 powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Uninstall
 ```
 
-Normal uninstall keeps `text_conversions.json`. Deleting those rules requires the
-separate `-DeleteConversions` option and a confirmation that names the file.
+Normal uninstall keeps `text_conversions.json`. Deleting those rules requires the separate `-DeleteConversions` option and a confirmation that names the file.
 
 ## Credits
 
-Released under the [MIT License](LICENSE). This project includes modified source
-from `faster-whisper-dictation`; see [Third-party notices](THIRD_PARTY_NOTICES.md).
+Released under the [MIT License](LICENSE). This project includes modified source from `faster-whisper-dictation`; see [Third-party notices](THIRD_PARTY_NOTICES.md).
