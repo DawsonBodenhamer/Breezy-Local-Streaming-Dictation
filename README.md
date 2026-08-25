@@ -55,20 +55,21 @@ WhisperLiveKit's default `large-v3-turbo` model is the reason this feels both qu
 
 Memory figures are approximate and real usage varies by hardware. See the [WhisperLiveKit model guide](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/docs/default_and_custom_models.md) for the upstream model comparisons. The VRAM figures apply to GPU acceleration; CPU mode uses system memory instead.
 
-## Start in four steps
+## Start in five steps
 
 > [!TIP]
-> Preview the installation first. Dry run makes no changes to your computer.
+> Download the latest release, then preview setup. A dry run makes no changes to your computer.
 
-1. Download or extract this project to a local folder.
-2. Open PowerShell in that folder.
-3. Preview setup:
+1. Open the project's GitHub **Releases** page and select the latest release.
+2. Download the `Breezy-Local-Streaming-Dictation-v<version>.zip` asset and extract it to a local folder.
+3. Open PowerShell in that folder.
+4. Preview the setup:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\setup.ps1 -DryRun
    ```
 
-4. Install when you are ready:
+5. Install when you are ready:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\setup.ps1
