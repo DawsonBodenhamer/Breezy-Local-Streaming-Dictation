@@ -50,6 +50,7 @@ _FORMAT_COMMAND_RE = re.compile(
     r"(?:\s*[,.!?;:])?",
     re.IGNORECASE,
 )
+_DEFAULT_FORMATTING_TIMEOUT_S = 2.0
 
 
 def _notify_pathological_decoder_output(
@@ -318,6 +319,8 @@ class DictationDaemon:
         self._cap_next: bool = False
         self._backtick_active: bool = False
         self._quote_state = QuoteState()
+        self._formatting_timeout_s: float = _DEFAULT_FORMATTING_TIMEOUT_S
+        self._last_speech_end_time: float = 0.0
 
     def _create_ws_engine(
         self, **kwargs: object,
@@ -341,8 +344,7 @@ class DictationDaemon:
         """Called for each audio chunk from the microphone.
 
         Note: reads _recording without the lock for performance in the
-        audio callback hot path. Safe on CPython due to the GIL.
-        """
+        audio callback hot path. Safe on CPython due to the GIL."""
         if not self._recording:
             return
 
@@ -369,7 +371,12 @@ class DictationDaemon:
             return
 
         if complete and utterance is not None:
-            self._transcribe_pool.submit(self._transcribe_and_type, utterance)
+            utterance_end_time = time.monotonic()
+            self._transcribe_pool.submit(
+                self._transcribe_and_type,
+                utterance,
+                utterance_end_time,
+            )
 
     def _on_ws_text(self, text: str) -> None:
         """Callback from WebSocket engine when transcription text arrives.
@@ -502,8 +509,17 @@ class DictationDaemon:
             + (" " if needs_trailing_space else "")
         )
 
-    def _transcribe_and_type(self, audio: np.ndarray) -> None:
+    def _transcribe_and_type(
+        self,
+        audio: np.ndarray,
+        utterance_end_time: float | None = None,
+    ) -> None:
         """Transcribe audio and type the result."""
+        if utterance_end_time is None:
+            utterance_end_time = time.monotonic()
+        audio_duration = len(audio) / self.config.audio.sample_rate
+        speech_start_time = utterance_end_time - audio_duration
+
         try:
             if self.streaming and isinstance(self._engine, LocalEngine):
                 raw_text = self._engine.transcribe(
@@ -535,6 +551,15 @@ class DictationDaemon:
                 )
             text = self._apply_user_conversions(text)
             with self._lock:
+                if (
+                    self._last_speech_end_time > 0.0
+                    and (speech_start_time - self._last_speech_end_time)
+                    >= self._formatting_timeout_s
+                ):
+                    self._all_caps_active = False
+                    self._caps_active = False
+                    self._cap_next = False
+
                 text, self._all_caps_active = apply_all_caps_commands(
                     text,
                     self._all_caps_active,
@@ -552,6 +577,7 @@ class DictationDaemon:
                     text,
                     self._quote_state,
                 )
+                self._last_speech_end_time = utterance_end_time
             if text:
                 injection = (
                     self._prepare_ws_injection(
@@ -673,6 +699,7 @@ class DictationDaemon:
             self._cap_next = False
             self._backtick_active = False
             self._quote_state = QuoteState()
+            self._last_speech_end_time = 0.0
         log.info("Recording started (use_ws=%s, streaming=%s, engine=%s)",
                  self._use_ws, self.streaming, self.config.engine.type)
 
@@ -757,7 +784,12 @@ class DictationDaemon:
             # Local-engine streaming: flush remaining VAD-buffered speech
             remaining = self._vad.flush()
             if remaining is not None:
-                self._transcribe_pool.submit(self._transcribe_and_type, remaining)
+                utterance_end_time = time.monotonic()
+                self._transcribe_pool.submit(
+                    self._transcribe_and_type,
+                    remaining,
+                    utterance_end_time,
+                )
         elif chunks:
             # Batch mode: transcribe the full recording at once
             full_audio = np.concatenate(chunks)
@@ -767,7 +799,11 @@ class DictationDaemon:
             if self.config.engine.type == "server":
                 self._transcribe_pool.submit(self._transcribe_batch_ws, full_audio)
             else:
-                self._transcribe_pool.submit(self._transcribe_and_type, full_audio)
+                self._transcribe_pool.submit(
+                    self._transcribe_and_type,
+                    full_audio,
+                    time.monotonic(),
+                )
         else:
             log.info("No audio recorded")
 
