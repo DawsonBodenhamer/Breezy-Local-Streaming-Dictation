@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breezy-local-streaming-dictation"
-version = "1.0.1"
+version = "1.0.2"
 description = "Fast local streaming dictation for Windows"
 requires-python = ">=3.12,<3.13"
 license = { file = "LICENSE" }
