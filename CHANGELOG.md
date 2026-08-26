@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.1] - 2026-08-25
 
+### Added
+- Automatically reset active capitalization modes (`all caps on`, `caps on`, `cap`) after 2 seconds of silence.
+
 ### Fixed
 - Insert dictated text into modern Windows Notepad without delayed or corrupted Unicode characters.
 - Close smart quotes correctly when `close quote` is split across streamed phrases.
