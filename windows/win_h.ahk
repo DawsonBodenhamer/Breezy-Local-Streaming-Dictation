@@ -8,6 +8,8 @@ Runtime := EnvGet("LOCALAPPDATA") "\breezy_local_streaming_dictation"
 SupervisorPath := Runtime "\supervisor.ps1"
 HotkeyApplyPath := Runtime "\hotkey_apply.ps1"
 HotkeyReadyPath := Runtime "\hotkey.ready"
+ClientReadyPath := Runtime "\client.ready"
+ClientFailedPath := Runtime "\client_failed.flag"
 HotkeyPendingPath := Runtime "\hotkey_change.pending"
 HotkeyResultPath := Runtime "\hotkey_change.result.json"
 ManagerPythonw := Runtime "\.venv\Scripts\pythonw.exe"
@@ -58,6 +60,15 @@ HandleDictationHotkey(*) {
 }
 
 ToggleDictation(*) {
+    global ClientReadyPath, ClientFailedPath
+    if FileExist(ClientFailedPath) {
+        TrayTip("Dictation client failed to start. Open logs or restart dictation.", "Breezy Local Streaming Dictation")
+        return
+    }
+    if !FileExist(ClientReadyPath) {
+        TrayTip("Dictation is still loading.", "Breezy Local Streaming Dictation")
+        return
+    }
     SendEvent "^!+{F24}"
 }
 

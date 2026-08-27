@@ -46,6 +46,8 @@ $StopFile = Join-Path $Runtime 'supervisor.stop'
 $DisabledFile = Join-Path $Runtime 'disabled.flag'
 $PauseFile = Join-Path $Runtime 'client_paused.flag'
 $ClientFailedFile = Join-Path $Runtime 'client_failed.flag'
+$ClientReadyFile = Join-Path $Runtime 'client.ready'
+$env:BREEZY_LOCAL_DICTATION_READY_FILE = $ClientReadyFile
 $TaskName = 'Breezy Local Streaming Dictation'
 $TaskPath = '\'
 $ScriptPath = $MyInvocation.MyCommand.Path
@@ -109,6 +111,7 @@ function Get-LiveSupervisorPid {
 
 function Start-Client {
     Initialize-EnginePath
+    Remove-Item -LiteralPath $ClientReadyFile -Force -ErrorAction SilentlyContinue
     Write-SupervisorLog 'Starting dictation client.'
     return Start-Process -FilePath $Pythonw `
         -ArgumentList @($ClientBootstrap, 'start', '--streaming', '--config', $Config) `
@@ -190,7 +193,7 @@ function Invoke-Run {
         Remove-Item -LiteralPath $StopFile -Force -ErrorAction SilentlyContinue
         # Only the singleton supervisor may clear session state. A duplicate run must
         # not cancel an intentional pause in the active supervisor.
-        Remove-Item -LiteralPath $PauseFile, $ClientFailedFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $PauseFile, $ClientFailedFile, $ClientReadyFile -Force -ErrorAction SilentlyContinue
         $Client = Start-Client
         $Hotkey = Start-Hotkey
         $ClientRestarts = [System.Collections.Generic.Queue[datetime]]::new()
@@ -236,6 +239,7 @@ function Invoke-Run {
                     if ($Queue.Count -ge 5) {
                         if ($Name -eq 'Client') {
                             Set-Content -LiteralPath $ClientFailedFile -Encoding ascii -Value 'failed'
+                            Remove-Item -LiteralPath $ClientReadyFile -Force -ErrorAction SilentlyContinue
                             $Client = $null
                             $ClientWasSuppressed = $true
                             Write-SupervisorLog 'Client exceeded five restarts in ten minutes; client stopped while tray remains available.'
@@ -294,6 +298,7 @@ function Invoke-Run {
         }
         Remove-Item -LiteralPath $StopFile -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $ClientReadyFile -Force -ErrorAction SilentlyContinue
         $Mutex.ReleaseMutex()
         $Mutex.Dispose()
     }
@@ -358,6 +363,7 @@ function Show-Status {
     Write-Output "Enabled: $Enabled"
     Write-Output "Client paused: $(Test-Path -LiteralPath $PauseFile)"
     Write-Output "Client failed: $(Test-Path -LiteralPath $ClientFailedFile)"
+    Write-Output "Client state: $(if (Test-Path -LiteralPath $ClientFailedFile) { 'failed' } elseif (Test-Path -LiteralPath $ClientReadyFile) { 'ready' } else { 'loading' })"
     Write-Output "Config: $Config"
     Write-Output "Log: $SupervisorLog"
     & $ClientExe status

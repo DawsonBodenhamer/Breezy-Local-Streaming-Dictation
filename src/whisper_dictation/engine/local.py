@@ -313,6 +313,91 @@ def guard_pathological_decoder_output(text: str) -> str:
     raise PathologicalDecoderOutput(reason, metrics)
 
 
+def remove_configured_prompt_leak(text: str, prompt: str | None) -> str:
+    """Remove substantial contiguous configured-prompt overlap from output."""
+    if not prompt or not text:
+        return text
+
+    token_pattern = re.compile(r"[A-Za-z0-9]+")
+    text_matches = list(token_pattern.finditer(text))
+    prompt_tokens = [match.group().casefold() for match in token_pattern.finditer(prompt)]
+    text_tokens = [match.group().casefold() for match in text_matches]
+    if not prompt_tokens or not text_tokens:
+        return text
+
+    # Some decoder failures repeat a short prompt-derived anchor while
+    # mutating the punctuation between its words and inventing a different
+    # continuation each time. Allow three deliberate repetitions, then fail
+    # closed from the first anchor when a fourth establishes the loop.
+    repeated_anchor_start: int | None = None
+    repeated_anchor_words = 0
+    repeated_anchor_count = 0
+    for size in range(min(5, len(prompt_tokens)), 2, -1):
+        prompt_ngrams = {
+            tuple(prompt_tokens[index : index + size])
+            for index in range(len(prompt_tokens) - size + 1)
+        }
+        occurrences: dict[tuple[str, ...], list[int]] = {}
+        for index in range(len(text_tokens) - size + 1):
+            ngram = tuple(text_tokens[index : index + size])
+            if ngram in prompt_ngrams:
+                occurrences.setdefault(ngram, []).append(index)
+        for indices in occurrences.values():
+            if len(indices) < 4:
+                continue
+            start = text_matches[indices[0]].start()
+            if repeated_anchor_start is None or start < repeated_anchor_start:
+                repeated_anchor_start = start
+                repeated_anchor_words = size
+                repeated_anchor_count = len(indices)
+        if repeated_anchor_start is not None:
+            break
+
+    if repeated_anchor_start is not None:
+        log.warning(
+            "Removed repeated configured-prompt fragment loop: "
+            "anchor_words=%d occurrences=%d",
+            repeated_anchor_words,
+            repeated_anchor_count,
+        )
+        return text[:repeated_anchor_start].rstrip()
+
+    minimum = 5
+    best: tuple[int, int] | None = None
+    best_length = 0
+    for text_start in range(len(text_tokens)):
+        for prompt_start in range(len(prompt_tokens)):
+            length = 0
+            while (
+                text_start + length < len(text_tokens)
+                and prompt_start + length < len(prompt_tokens)
+                and text_tokens[text_start + length]
+                == prompt_tokens[prompt_start + length]
+            ):
+                length += 1
+            if length >= minimum and length > best_length:
+                best = (text_start, text_start + length - 1)
+                best_length = length
+
+    if best is None:
+        return text
+
+    start = text_matches[best[0]].start()
+    end = text_matches[best[1]].end()
+    # Include prompt punctuation but preserve punctuation belonging to adjacent
+    # dictation. Whitespace cleanup makes removal safe in the middle of text.
+    while end < len(text) and text[end] in "'’\".,!?;: ":
+        end += 1
+    cleaned = (text[:start] + text[end:]).strip()
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    log.warning(
+        "Removed configured-prompt overlap: overlap_words=%d prompt_words=%d",
+        best_length,
+        len(prompt_tokens),
+    )
+    return remove_configured_prompt_leak(cleaned, prompt)
+
+
 def _parse_number_component(value: str) -> int | None:
     """Parse a numeric token or a bounded spoken number from zero through 59."""
     normalized = value.lower().replace("-", " ").strip()
@@ -411,8 +496,11 @@ def apply_spoken_punctuation(text: str) -> str:
         return PENDING_CLOSE_COMMAND
 
     for phrase, character in _SPOKEN_PUNCTUATION:
+        phrase_pattern = r"(?:\s+|[,.!?;:]\s*)".join(
+            re.escape(word) for word in phrase.split()
+        )
         pattern = re.compile(
-            rf"[,.!?;:]?\s*\b{re.escape(phrase)}\b[.,]?",
+            rf"[,.!?;:]?\s*\b{phrase_pattern}\b[.,]?",
             re.IGNORECASE,
         )
         text = pattern.sub(character, text)
@@ -687,6 +775,7 @@ class LocalEngine(TranscriptionEngine):
         text = merge_transcription_segment_texts(
             [seg.text for seg in segments]
         )
+        text = remove_configured_prompt_leak(text, self._prompt)
         text = guard_pathological_decoder_output(text)
         text = suppress_pause_terminator(text)
         text = apply_spoken_punctuation(text)
@@ -700,8 +789,8 @@ class LocalEngine(TranscriptionEngine):
         try:
             self._ensure_model()
             return True
-        except Exception as e:
-            log.debug("Local engine not available: %s", e)
+        except Exception:
+            log.error("Local engine model load failed", exc_info=True)
             return False
 
     def close(self) -> None:

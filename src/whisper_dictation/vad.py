@@ -175,6 +175,10 @@ class SpeechDetector:
         self._current_pre_roll_chunks = 0
         self._detected_utterances = 0
         self._rejected_utterances = 0
+        self._observed_chunks = 0
+        self._subthreshold_chunks = 0
+        self._peak_rms = 0.0
+        self._max_probability = 0.0
         log.info(
             "VAD settings: threshold=%.2f, silence=%dms effective, "
             "minimum_speech=%dms effective, pre_roll=%dms effective",
@@ -199,6 +203,12 @@ class SpeechDetector:
             self._ring_buffer.clear()
             self._buffer = np.array([], dtype=np.float32)
             self._current_pre_roll_chunks = 0
+            self._detected_utterances = 0
+            self._rejected_utterances = 0
+            self._observed_chunks = 0
+            self._subthreshold_chunks = 0
+            self._peak_rms = 0.0
+            self._max_probability = 0.0
             if _model is not None and hasattr(_model, "reset_states"):
                 _model.reset_states()
 
@@ -226,6 +236,12 @@ class SpeechDetector:
             chunk = self._buffer[: self.chunk_size]
             self._buffer = self._buffer[self.chunk_size :]
             probability = _model(chunk, self.sample_rate)
+            rms = float(np.sqrt(np.mean(np.square(chunk), dtype=np.float64)))
+            self._observed_chunks += 1
+            self._peak_rms = max(self._peak_rms, rms)
+            self._max_probability = max(self._max_probability, probability)
+            if probability < self.threshold:
+                self._subthreshold_chunks += 1
 
             if probability >= self.threshold:
                 if not self._is_speaking:
@@ -316,3 +332,28 @@ class SpeechDetector:
     @property
     def is_speaking(self) -> bool:
         return self._is_speaking
+
+    def session_summary(self) -> dict[str, int | float]:
+        """Return bounded transcript-free diagnostics for the active capture."""
+        with self._lock:
+            return {
+                "chunks": self._observed_chunks,
+                "peak_rms": round(self._peak_rms, 6),
+                "max_probability": round(self._max_probability, 4),
+                "subthreshold_chunks": self._subthreshold_chunks,
+                "accepted_utterances": self._detected_utterances,
+                "rejected_short_utterances": self._rejected_utterances,
+            }
+
+    def log_session_summary(self) -> None:
+        summary = self.session_summary()
+        log.info(
+            "Audio/VAD summary: chunks=%d peak_rms=%.6f max_probability=%.4f "
+            "subthreshold_chunks=%d accepted_utterances=%d rejected_short_utterances=%d",
+            summary["chunks"],
+            summary["peak_rms"],
+            summary["max_probability"],
+            summary["subthreshold_chunks"],
+            summary["accepted_utterances"],
+            summary["rejected_short_utterances"],
+        )

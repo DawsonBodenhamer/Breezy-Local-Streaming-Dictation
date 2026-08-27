@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +18,7 @@ import numpy as np
 
 from .audio import AudioStream
 from .caret_context import CaretContext, get_caret_context
-from .config import Config
+from .config import CONFIG_DIR, Config
 from .conversions import ConversionStore
 from .engine import TranscriptionEngine, create_engine, create_ws_engine
 from .engine.local import (
@@ -27,6 +29,7 @@ from .engine.local import (
     guard_pathological_decoder_output,
     guard_pathological_repetition,
     normalize_spoken_numbers,
+    remove_configured_prompt_leak,
 )
 from .hotkey import HotkeyListener
 from .notifier import notify
@@ -53,6 +56,62 @@ _FORMAT_COMMAND_RE = re.compile(
 _DEFAULT_FORMATTING_TIMEOUT_S = 2.0
 
 
+class SessionEmissionHistory:
+    """Bound exact one- through four-emission cycles within one recording."""
+
+    def __init__(self, maximum: int = 16) -> None:
+        self._items: deque[str] = deque(maxlen=maximum)
+        self._suppressed_tail: deque[str] = deque()
+
+    def reset(self) -> None:
+        self._items.clear()
+        self._suppressed_tail.clear()
+
+    def accept(self, text: str) -> bool:
+        normalized = " ".join(re.findall(r"[A-Za-z0-9]+", text.casefold()))
+        if not normalized:
+            return True
+        if self._suppressed_tail:
+            if normalized == self._suppressed_tail[0]:
+                self._suppressed_tail.popleft()
+                log.warning(
+                    "Suppressed cross-utterance repetition tail: remaining=%d",
+                    len(self._suppressed_tail),
+                )
+                return False
+            self._suppressed_tail.clear()
+
+        prior = list(self._items)
+        for width in range(1, min(4, len(prior) // 2) + 1):
+            cycle = prior[-width:]
+            if prior[-2 * width : -width] == cycle and normalized == cycle[0]:
+                self._suppressed_tail.extend(cycle[1:])
+                log.warning(
+                    "Suppressed cross-utterance repetition: cycle_emissions=%d",
+                    width,
+                )
+                return False
+        self._items.append(normalized)
+        return True
+
+
+class ClientReadinessState:
+    """Own the explicit marker indicating model and hotkey readiness."""
+
+    def __init__(self, marker: Path) -> None:
+        self._marker = marker
+
+    def loading(self) -> None:
+        self._marker.unlink(missing_ok=True)
+
+    def ready(self) -> None:
+        self._marker.parent.mkdir(parents=True, exist_ok=True)
+        self._marker.write_text("ready\n", encoding="ascii")
+
+    def stopped(self) -> None:
+        self._marker.unlink(missing_ok=True)
+
+
 def _notify_pathological_decoder_output(
     error: PathologicalDecoderOutput,
 ) -> None:
@@ -64,6 +123,21 @@ def _notify_pathological_decoder_output(
     notify(
         "Dictation retry",
         "Unusual transcription discarded; please try again.",
+    )
+
+
+def _log_focus_rejection(context: CaretContext, boundary: str) -> None:
+    target = context.target
+    log.info(
+        "Focus rejection: boundary=%s executable=%s window_class=%s "
+        "control_type=%s text_pattern=%s value_pattern=%s error=%s",
+        boundary,
+        target.foreground_executable if target else "",
+        target.foreground_window_class if target else "",
+        target.control_type if target else "",
+        target.text_pattern if target else False,
+        target.value_pattern if target else False,
+        target.error if target else "no_diagnostic",
     )
 
 
@@ -321,6 +395,14 @@ class DictationDaemon:
         self._quote_state = QuoteState()
         self._formatting_timeout_s: float = _DEFAULT_FORMATTING_TIMEOUT_S
         self._last_speech_end_time: float = 0.0
+        self._emission_history = SessionEmissionHistory()
+        ready_path = os.environ.get("BREEZY_LOCAL_DICTATION_READY_FILE")
+        self._readiness = ClientReadinessState(
+            Path(ready_path) if ready_path else CONFIG_DIR / "client.ready"
+        )
+
+    def _remove_prompt_leak(self, text: str) -> str:
+        return remove_configured_prompt_leak(text, self.config.server.prompt)
 
     def _create_ws_engine(
         self, **kwargs: object,
@@ -387,18 +469,19 @@ class DictationDaemon:
         if not text or not text.strip():
             return
         try:
-            cleaned = guard_pathological_decoder_output(text).strip()
+            cleaned = guard_pathological_decoder_output(
+                self._remove_prompt_leak(text)
+            ).strip()
         except PathologicalDecoderOutput as error:
             _notify_pathological_decoder_output(error)
+            return
+        if not cleaned:
             return
         cleaned = normalize_spoken_numbers(cleaned)
         cleaned = guard_pathological_repetition(cleaned)
         caret_context = get_caret_context()
         if not caret_context.injection_allowed:
-            log.info(
-                "Skipped WS transcription because no editable text control "
-                "was focused",
-            )
+            _log_focus_rejection(caret_context, "websocket_stream")
             return
         cleaned = apply_contextual_phrase_casing(
             cleaned,
@@ -532,14 +615,13 @@ class DictationDaemon:
                     audio,
                     self.config.audio.sample_rate,
                 )
-            text = guard_pathological_decoder_output(raw_text)
+            text = guard_pathological_decoder_output(
+                self._remove_prompt_leak(raw_text)
+            )
             text = guard_pathological_repetition(normalize_spoken_numbers(text))
             caret_context = get_caret_context()
             if not caret_context.injection_allowed:
-                log.info(
-                    "Skipped transcription because no editable text control "
-                    "was focused",
-                )
+                _log_focus_rejection(caret_context, "local")
                 return
             if self.config.engine.type == "local":
                 text = apply_contextual_phrase_casing(
@@ -550,6 +632,12 @@ class DictationDaemon:
                     ),
                 )
             text = self._apply_user_conversions(text)
+            if (
+                self.streaming
+                and not self._use_ws
+                and not self._emission_history.accept(text)
+            ):
+                return
             with self._lock:
                 if (
                     self._last_speech_end_time > 0.0
@@ -617,12 +705,13 @@ class DictationDaemon:
                 try:
                     caret_context = get_caret_context()
                     if not caret_context.injection_allowed:
-                        log.info(
-                            "Skipped pending WS transcription because no "
-                            "editable text control was focused",
-                        )
+                        _log_focus_rejection(caret_context, "websocket_pending")
                         return
-                    cleaned = guard_pathological_decoder_output(pending)
+                    cleaned = guard_pathological_decoder_output(
+                        self._remove_prompt_leak(pending)
+                    )
+                    if not cleaned.strip():
+                        return
                     cleaned = apply_contextual_phrase_casing(
                         guard_pathological_repetition(
                             normalize_spoken_numbers(cleaned.strip())
@@ -663,13 +752,14 @@ class DictationDaemon:
             return
         try:
             if text:
-                text = guard_pathological_decoder_output(text)
+                text = guard_pathological_decoder_output(
+                    self._remove_prompt_leak(text)
+                )
+                if not text.strip():
+                    return
                 caret_context = get_caret_context()
                 if not caret_context.injection_allowed:
-                    log.info(
-                        "Skipped WS batch transcription because no editable "
-                        "text control was focused",
-                    )
+                    _log_focus_rejection(caret_context, "websocket_batch")
                     return
                 text = normalize_spoken_numbers(text)
                 text = self._apply_user_conversions(text)
@@ -700,6 +790,7 @@ class DictationDaemon:
             self._backtick_active = False
             self._quote_state = QuoteState()
             self._last_speech_end_time = 0.0
+            self._emission_history.reset()
         log.info("Recording started (use_ws=%s, streaming=%s, engine=%s)",
                  self._use_ws, self.streaming, self.config.engine.type)
 
@@ -783,6 +874,7 @@ class DictationDaemon:
         elif self.streaming:
             # Local-engine streaming: flush remaining VAD-buffered speech
             remaining = self._vad.flush()
+            self._vad.log_session_summary()
             if remaining is not None:
                 utterance_end_time = time.monotonic()
                 self._transcribe_pool.submit(
@@ -828,6 +920,7 @@ class DictationDaemon:
 
     def start(self) -> None:
         """Start the dictation daemon."""
+        self._readiness.loading()
         _set_recording_indicator(active=False)
         if not self._check_server_available():
             engine_type = self.config.engine.type
@@ -839,6 +932,7 @@ class DictationDaemon:
             else:
                 log.error("Local engine not available.")
             notify("Error", "Transcription engine not available")
+            self._readiness.stopped()
             raise RuntimeError("Transcription engine not available")
 
         # Start hotkey listener
@@ -849,6 +943,8 @@ class DictationDaemon:
             on_deactivate=self._on_deactivate,
         )
         self._hotkey.start()
+
+        self._readiness.ready()
 
         self._running.set()
         mode = self.config.hotkey.mode
@@ -867,6 +963,7 @@ class DictationDaemon:
 
     def stop(self) -> None:
         """Stop the dictation daemon."""
+        self._readiness.stopped()
         self._running.clear()
         self._stop_event.set()
         _set_recording_indicator(active=False)

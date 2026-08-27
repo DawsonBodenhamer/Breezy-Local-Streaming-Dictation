@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.3] - Unreleased
 
+### Added
+- **Clearer startup and troubleshooting information**
+  - The tray now tells you when dictation is still loading or could not start, instead of accepting the shortcut without explaining why nothing happened.
+  - Breezy now records more useful troubleshooting logging when it cannot hear you or type into the selected text box. These details never include your audio or dictated words.
+
+### Fixed
+- **More reliable dictation**
+  - Removed starter-example text that could occasionally appear in your dictation by mistake.
+  - Stopped Breezy from repeatedly typing the same phrases during a single dictation session while still allowing intentional repetition.
+- **Spoken punctuation commands**
+  - Commands such as `question mark` now work even when speech recognition places an unexpected pause or punctuation mark between the words.
+
 ---
 
 ## [1.0.2] - 2026-08-26
