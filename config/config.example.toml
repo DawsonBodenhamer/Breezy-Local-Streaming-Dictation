@@ -3,7 +3,7 @@ url = "http://127.0.0.1:8000"
 model = ""
 language = "en"
 timeout = 30
-prompt = "Dictate naturally and preserve spoken punctuation commands."
+prompt = "If you want stronger results, start with one clear idea and make it easy to recognize. By the way you do not need to explain everything in the thumbnail because the title can provide context. I’ve tested many different approaches so I know simple designs usually work best."
 temperature = 0.0
 hotwords = "period, comma, colon, semicolon, question mark, exclamation mark, new line, new paragraph"
 
