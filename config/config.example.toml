@@ -31,3 +31,8 @@ device = "cuda"
 [websocket]
 reconnect_attempts = 3
 reconnect_delay = 1.0
+
+[formatting]
+automatic_punctuation = false
+capitalize_new_paragraphs = true
+capitalize_new_lines = true

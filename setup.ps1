@@ -106,7 +106,7 @@ function Invoke-Uninstall {
     $ownedFiles = @(
         'client_bootstrap.pyw', 'config.toml', 'hotkey_apply.ps1', 'hotkey_capture.ahk',
         'hotkey.ready', 'hotkey_change.pending', 'hotkey_change.result.json',
-        'list_microphones.py', 'runtime.env', 'startup_hidden.vbs', 'supervisor.ps1',
+        'formatting_config.py', 'list_microphones.py', 'runtime.env', 'startup_hidden.vbs', 'supervisor.ps1',
         'text_conversion_manager.py', 'win_h.ahk'
     )
     $ownedDirectories = @('.venv', 'assets', 'logs', 'manifests', 'models')
@@ -237,6 +237,16 @@ Start-WizardStage 'Write machine-local configuration'
 if (-not (Confirm-WizardAction "Write config.toml under $runtime without replacing text_conversions.json?")) { Write-Warning 'Setup cancelled before configuration.'; return }
 $escapedModel = $model.Replace('\', '\\').Replace('"', '\"')
 $config = (Get-Content -LiteralPath (Join-Path $sourceRoot 'config\config.example.toml') -Raw -Encoding utf8)
+$existingConfigPath = Join-Path $runtime 'config.toml'
+if (Test-Path -LiteralPath $existingConfigPath) {
+    $existingConfig = Get-Content -LiteralPath $existingConfigPath -Raw -Encoding utf8
+    $automaticPunctuation = if ($existingConfig -match '(?ms)^\[formatting\].*?^automatic_punctuation\s*=\s*(true|false)') { $Matches[1] } else { 'true' }
+    $capitalizeNewParagraphs = if ($existingConfig -match '(?ms)^\[formatting\].*?^capitalize_new_paragraphs\s*=\s*(true|false)') { $Matches[1] } else { 'true' }
+    $capitalizeNewLines = if ($existingConfig -match '(?ms)^\[formatting\].*?^capitalize_new_lines\s*=\s*(true|false)') { $Matches[1] } else { 'true' }
+    $config = $config -replace 'automatic_punctuation = false', "automatic_punctuation = $automaticPunctuation"
+    $config = $config -replace 'capitalize_new_paragraphs = true', "capitalize_new_paragraphs = $capitalizeNewParagraphs"
+    $config = $config -replace 'capitalize_new_lines = true', "capitalize_new_lines = $capitalizeNewLines"
+}
 $config = $config -replace 'model = ""', ('model = "{0}"' -f $escapedModel)
 $config = $config -replace 'device = -1', ('device = {0}' -f $device)
 $config = $config -replace 'compute_type = "float16"', $engineComputeTypeLine
@@ -255,8 +265,8 @@ if (-not $DryRun) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'assets') -Destination $runtime -Recurse -Force
 }
 $script:Summary.Add('Installed Windows integration files')
-if (-not (Test-Path -LiteralPath $conversionPath) -and (Confirm-WizardAction "Initialize a new empty conversion file at ${conversionPath}?")) {
-    if (-not $DryRun) { '{"version":1,"rules":[]}' | Set-Content -LiteralPath $conversionPath -Encoding utf8 }
+if (-not (Test-Path -LiteralPath $conversionPath) -and (Confirm-WizardAction "Initialize a new empty correction file at ${conversionPath}?")) {
+    if (-not $DryRun) { '{"version":2,"corrections":[]}' | Set-Content -LiteralPath $conversionPath -Encoding utf8 }
     $script:Summary.Add('Initialized a new conversion file')
 }
 Assert-ConversionsUnchanged -Before $conversionBefore -Path $conversionPath

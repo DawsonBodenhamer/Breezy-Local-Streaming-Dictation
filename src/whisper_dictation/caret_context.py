@@ -82,6 +82,21 @@ def _is_placeholder_context(
     )
 
 
+def _trailing_line_break_count(text: str) -> int:
+    """Count at most two logical CR/LF line breaks at the end of text."""
+    count = 0
+    cursor = len(text)
+    while cursor > 0 and count < 2:
+        if cursor >= 2 and text[cursor - 2 : cursor] == "\r\n":
+            cursor -= 2
+        elif text[cursor - 1] in ("\r", "\n"):
+            cursor -= 1
+        else:
+            break
+        count += 1
+    return count
+
+
 @dataclass(frozen=True)
 class CaretContext:
     """Read-only text immediately surrounding the focused selection/caret."""
@@ -93,6 +108,7 @@ class CaretContext:
     selection_text: str = ""
     before_char: str = ""
     after_char: str = ""
+    preceding_line_breaks: int = 0
     target: FocusedControlDiagnostic | None = None
 
     @property
@@ -124,6 +140,32 @@ class CaretContext:
                 self.after_char,
             )
         )
+
+
+def classify_casing_context(
+    context: CaretContext,
+    manual_break_count: int = 0,
+) -> str:
+    """Classify document, paragraph, line, or no capitalization boundary."""
+    if not context.injection_allowed or context.has_selection is True:
+        return "none"
+    if context.available:
+        if context.is_empty_document:
+            return "document"
+        preceding_line_breaks = (
+            context.preceding_line_breaks
+            if isinstance(context.preceding_line_breaks, int)
+            else 0
+        )
+        if preceding_line_breaks >= 2:
+            return "paragraph"
+        if preceding_line_breaks == 1:
+            return "line"
+    if manual_break_count >= 2:
+        return "paragraph"
+    if manual_break_count == 1:
+        return "line"
+    return "none"
 
 
 def is_empty_casing_context(
@@ -444,6 +486,7 @@ def _value_pattern_context(control: Any, value_pattern: Any) -> CaretContext:
         selection_text=value[start:end],
         before_char=value[start - 1 : start],
         after_char=value[end : end + 1],
+        preceding_line_breaks=_trailing_line_break_count(value[:start]),
     )
 
 
@@ -506,6 +549,7 @@ def get_caret_context() -> CaretContext:
                     selection_text=context.selection_text,
                     before_char=context.before_char,
                     after_char=context.after_char,
+                    preceding_line_breaks=context.preceding_line_breaks,
                     target=target,
                 )
             if pattern is None:
@@ -544,7 +588,7 @@ def get_caret_context() -> CaretContext:
             before.MoveEndpointByUnit(
                 auto.TextPatternRangeEndpoint.Start,
                 auto.TextUnit.Character,
-                -1,
+                -2,
                 waitTime=0,
             )
             before_text = before.GetText(-1)
@@ -572,6 +616,7 @@ def get_caret_context() -> CaretContext:
                 selection_text=selection_text,
                 before_char=before_text[-1:] if before_text else "",
                 after_char=after_text[:1] if after_text else "",
+                preceding_line_breaks=_trailing_line_break_count(before_text),
                 target=target,
             )
     except Exception:

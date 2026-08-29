@@ -74,6 +74,13 @@ class WebSocketConfig:
 
 
 @dataclass(frozen=True)
+class FormattingConfig:
+    automatic_punctuation: bool = False
+    capitalize_new_paragraphs: bool = True
+    capitalize_new_lines: bool = True
+
+
+@dataclass(frozen=True)
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     hotkey: HotkeyConfig = field(default_factory=HotkeyConfig)
@@ -81,6 +88,7 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
+    formatting: FormattingConfig = field(default_factory=FormattingConfig)
 
 
 def _apply_env_overrides(config: Config) -> Config:
@@ -107,6 +115,12 @@ def _apply_env_overrides(config: Config) -> Config:
         "DICTATION_VAD_PRE_SPEECH_MS": ("vad", "pre_speech_ms"),
         "DICTATION_WS_RECONNECT_ATTEMPTS": ("websocket", "reconnect_attempts"),
         "DICTATION_WS_RECONNECT_DELAY": ("websocket", "reconnect_delay"),
+        "DICTATION_AUTOMATIC_PUNCTUATION": ("formatting", "automatic_punctuation"),
+        "DICTATION_CAPITALIZE_NEW_PARAGRAPHS": (
+            "formatting",
+            "capitalize_new_paragraphs",
+        ),
+        "DICTATION_CAPITALIZE_NEW_LINES": ("formatting", "capitalize_new_lines"),
     }
     sections: dict[str, dict] = {
         "server": {},
@@ -115,6 +129,7 @@ def _apply_env_overrides(config: Config) -> Config:
         "audio": {},
         "engine": {},
         "websocket": {},
+        "formatting": {},
     }
     for env_key, (section, key) in env_map.items():
         value = os.environ.get(env_key)
@@ -151,6 +166,7 @@ def _apply_env_overrides(config: Config) -> Config:
         audio=merge(config.audio, sections["audio"], AudioConfig),
         engine=merge(config.engine, sections["engine"], EngineConfig),
         websocket=merge(config.websocket, sections["websocket"], WebSocketConfig),
+        formatting=merge(config.formatting, sections["formatting"], FormattingConfig),
     )
 
 
@@ -166,6 +182,7 @@ def load_config(config_path: Path | None = None) -> Config:
     if path.exists():
         with open(path, "rb") as config_file:
             raw = tomllib.load(config_file)
+        formatting_raw = raw.get("formatting", {})
         config = Config(
             server=_build_section(raw.get("server", {}), ServerConfig),
             hotkey=_build_section(raw.get("hotkey", {}), HotkeyConfig),
@@ -173,6 +190,13 @@ def load_config(config_path: Path | None = None) -> Config:
             audio=_build_section(raw.get("audio", {}), AudioConfig),
             engine=_build_section(raw.get("engine", {}), EngineConfig),
             websocket=_build_section(raw.get("websocket", {}), WebSocketConfig),
+            formatting=_build_section(
+                {
+                    "automatic_punctuation": True,
+                    **formatting_raw,
+                },
+                FormattingConfig,
+            ),
         )
     else:
         config = Config()

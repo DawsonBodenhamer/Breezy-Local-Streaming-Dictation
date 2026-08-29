@@ -1,4 +1,4 @@
-"""On-demand native manager for personal text conversions."""
+"""On-demand native manager for dictation corrections."""
 
 from __future__ import annotations
 
@@ -21,13 +21,20 @@ from whisper_dictation.conversions import (
     ConversionRule,
     ConversionStore,
     ConversionValidationError,
-    new_rule,
+    new_correction,
+    organize_suggested_groups,
+    suggest_compatible_groups,
 )
 
-WINDOW_TITLE = "Manage text conversions"
+WINDOW_TITLE = "Dictation corrections"
 SEPARATE_WORDS_LABEL = "As separate words"
 ANYWHERE_LABEL = "Anywhere, including inside words"
 ERROR_ALREADY_EXISTS = 183
+
+
+def suggestion_phrase_rows(rules: list[ConversionRule] | tuple[ConversionRule, ...]) -> tuple[str, ...]:
+    """Return one complete visible row per phrase in a suggested group."""
+    return tuple(rule.source for rule in rules)
 
 
 def _match_location_label(value: str) -> str:
@@ -80,12 +87,13 @@ class ConversionManager:
         intro.columnconfigure(0, weight=1)
         ttk.Label(
             intro,
-            text="Text conversions",
+            text="Dictation corrections",
             font=("Segoe UI", 15, "bold"),
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             intro,
-            text="Change literal phrases after transcription. Updates apply to the next completed transcription.",
+            text=("Fix words or phrases Breezy often hears incorrectly. Add everything "
+                  "Breezy might hear, then choose exactly what it should type."),
             wraplength=820,
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
@@ -96,7 +104,7 @@ class ConversionManager:
 
         ttk.Label(
             content,
-            text="When dictation hears / Replace with",
+            text="Breezy may hear / Breezy should type / Matching",
             font=("Segoe UI", 10, "bold"),
         ).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
@@ -106,17 +114,16 @@ class ConversionManager:
         table_frame.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(
             table_frame,
-            columns=("source", "replacement", "location", "case"),
+            columns=("source", "replacement", "matching"),
             show="headings",
             selectmode="browse",
         )
         headings = {
-            "source": "When dictation hears",
-            "replacement": "Replace with",
-            "location": "Where it matches",
-            "case": "Capitalization",
+            "source": "Breezy may hear",
+            "replacement": "Breezy should type",
+            "matching": "Matching",
         }
-        widths = {"source": 200, "replacement": 200, "location": 250, "case": 150}
+        widths = {"source": 280, "replacement": 220, "matching": 250}
         for column in self.tree["columns"]:
             self.tree.heading(column, text=headings[column])
             self.tree.column(column, width=widths[column], anchor="w", stretch=True)
@@ -130,7 +137,7 @@ class ConversionManager:
 
         self.empty_label = ttk.Label(
             table_frame,
-            text="No conversions yet. Add one when you are ready; the shipped list starts empty.",
+            text="No corrections yet. Add one when Breezy hears something incorrectly.",
             justify="center",
             anchor="center",
         )
@@ -142,12 +149,14 @@ class ConversionManager:
         actions = ttk.Frame(self.root, padding=(18, 8, 18, 16))
         actions.grid(row=2, column=0, sticky="ew")
         actions.columnconfigure(0, weight=1)
-        ttk.Button(actions, text="Add", command=self._add).grid(row=0, column=1, padx=(0, 6))
+        self.review_button = ttk.Button(actions, text="Review suggested groups", command=self._review_suggested_groups)
+        self.review_button.grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(actions, text="Add correction", command=self._add).grid(row=0, column=2, padx=(0, 6))
         self.edit_button = ttk.Button(actions, text="Edit", command=self._edit_selected)
-        self.edit_button.grid(row=0, column=2, padx=(0, 6))
+        self.edit_button.grid(row=0, column=3, padx=(0, 6))
         self.delete_button = ttk.Button(actions, text="Delete", command=self._delete_selected)
-        self.delete_button.grid(row=0, column=3, padx=(0, 6))
-        ttk.Button(actions, text="Close", command=self.root.destroy).grid(row=0, column=4)
+        self.delete_button.grid(row=0, column=4, padx=(0, 6))
+        ttk.Button(actions, text="Close", command=self.root.destroy).grid(row=0, column=5)
 
         self.root.bind("<Control-n>", lambda _event: self._add())
         self.root.bind("<Escape>", lambda _event: self.root.destroy())
@@ -168,10 +177,10 @@ class ConversionManager:
                 "end",
                 iid=rule.identifier,
                 values=(
-                    rule.source,
+                    rule.source if len(rule.sources) == 1 else f"{rule.source} (+{len(rule.sources) - 1} more)",
                     rule.replacement,
-                    _match_location_label(rule.match_location),
-                    "Exact capitalization" if rule.case_sensitive else "Any capitalization",
+                    f"{_match_location_label(rule.match_location)}; "
+                    f"{'exact' if rule.case_sensitive else 'any'} capitalization",
                 ),
             )
         empty = not self.rules
@@ -182,6 +191,9 @@ class ConversionManager:
         state = "normal" if self.rules else "disabled"
         self.edit_button.configure(state=state)
         self.delete_button.configure(state=state)
+        self.review_button.configure(
+            state="normal" if suggest_compatible_groups(self.rules) else "disabled"
+        )
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
             self.tree.focus(selected)
@@ -192,7 +204,7 @@ class ConversionManager:
         if self.store.last_error:
             self._status.set(self.store.last_error)
         elif empty:
-            self._status.set("No conversions saved.")
+            self._status.set("No corrections saved.")
         else:
             self._status.set("Changes apply to the next completed transcription.")
 
@@ -210,8 +222,8 @@ class ConversionManager:
         if rule is None:
             return "break" if _event is not None else None
         if not messagebox.askyesno(
-            "Delete conversion",
-            f'Delete the conversion "{rule.source}" → "{rule.replacement}"?',
+            "Delete correction",
+            f'Delete the correction "{rule.source}" → "{rule.replacement}"?',
             parent=self.root,
         ):
             return "break" if _event is not None else None
@@ -225,7 +237,7 @@ class ConversionManager:
 
     def _open_editor(self, existing: ConversionRule | None) -> None:
         editor = tk.Toplevel(self.root)
-        editor.title("Edit text conversion" if existing else "Add text conversion")
+        editor.title("Edit correction" if existing else "Add correction")
         editor.geometry("720x500")
         editor.minsize(620, 430)
         editor.transient(self.root)
@@ -236,16 +248,20 @@ class ConversionManager:
         form = ttk.Frame(editor, padding=18)
         form.grid(row=0, column=0, sticky="ew")
         form.columnconfigure(1, weight=1)
-        ttk.Label(form, text="When dictation hears").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
-        source_var = tk.StringVar(value=existing.source if existing else "")
-        source_entry = ttk.Entry(form, textvariable=source_var)
+        ttk.Label(form, text="Breezy may hear (one phrase per line)").grid(row=0, column=0, sticky="nw", padx=(0, 12), pady=5)
+        source_entry = tk.Text(form, height=5, width=50)
+        source_entry.insert("1.0", "\n".join(existing.sources) if existing else "")
         source_entry.grid(row=0, column=1, sticky="ew", pady=5)
-        ttk.Label(form, text="Replace with").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
+        phrase_actions = ttk.Frame(form)
+        phrase_actions.grid(row=1, column=1, sticky="w")
+        ttk.Button(phrase_actions, text="Add another phrase", command=lambda: source_entry.insert("end", "\n")).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(phrase_actions, text="Remove selected phrase", command=lambda: source_entry.delete("insert linestart", "insert lineend+1c")).grid(row=0, column=1)
+        ttk.Label(form, text="Breezy should type this").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
         replacement_var = tk.StringVar(value=existing.replacement if existing else "")
         replacement_entry = ttk.Entry(form, textvariable=replacement_var)
-        replacement_entry.grid(row=1, column=1, sticky="ew", pady=5)
+        replacement_entry.grid(row=2, column=1, sticky="ew", pady=5)
 
-        match_frame = ttk.LabelFrame(editor, text="Where should it match?", padding=12)
+        match_frame = ttk.LabelFrame(editor, text="Matching options", padding=12)
         match_frame.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
         match_frame.columnconfigure(0, weight=1)
         match_var = tk.StringVar(value=existing.match_location if existing else SEPARATE_WORDS)
@@ -292,7 +308,7 @@ class ConversionManager:
             command=lambda: self._save_editor(
                 editor,
                 existing,
-                source_var,
+                source_entry,
                 replacement_var,
                 match_var,
                 case_var,
@@ -301,7 +317,7 @@ class ConversionManager:
         ).grid(row=0, column=2)
 
         def update_preview(*_args: object) -> None:
-            source = source_var.get().strip()
+            source = source_entry.get("1.0", "end").splitlines()[0].strip() if source_entry.get("1.0", "end").strip() else ""
             replacement = replacement_var.get().strip() or "(replacement text)"
             if not source:
                 preview.configure(text="Enter a phrase to see an example.")
@@ -327,9 +343,9 @@ class ConversionManager:
                 )
             )
 
-        source_var.trace_add("write", update_preview)
         replacement_var.trace_add("write", update_preview)
         match_var.trace_add("write", update_preview)
+        source_entry.bind("<KeyRelease>", update_preview)
         update_preview()
         source_entry.focus_set()
         editor.bind("<Escape>", lambda _event: editor.destroy())
@@ -338,7 +354,7 @@ class ConversionManager:
         self,
         editor: tk.Toplevel,
         existing: ConversionRule | None,
-        source_var: tk.StringVar,
+        source_entry: tk.Text,
         replacement_var: tk.StringVar,
         match_var: tk.StringVar,
         case_var: tk.BooleanVar,
@@ -347,8 +363,9 @@ class ConversionManager:
         identifier = existing.identifier if existing else None
         order = existing.order if existing else max((rule.order for rule in self.rules), default=-1) + 1
         try:
-            candidate = new_rule(
-                source_var.get().strip(),
+            sources = tuple(line.strip() for line in source_entry.get("1.0", "end").splitlines() if line.strip())
+            candidate = new_correction(
+                sources,
                 replacement_var.get().strip(),
                 match_location=match_var.get(),
                 case_sensitive=case_var.get(),
@@ -358,13 +375,117 @@ class ConversionManager:
             others = [rule for rule in self.rules if rule.identifier != identifier]
             self.rules = list(self.store.save((*others, candidate)))
         except ConversionValidationError as error:
-            error_var.set(error.field_errors.get("source") or error.field_errors.get("replacement") or error.errors[0])
+            error_var.set(error.field_errors.get("sources") or error.field_errors.get("replacement") or error.errors[0])
             return
         except OSError:
-            error_var.set("The conversion file could not be saved. Check that the local runtime folder is writable.")
+            error_var.set("The corrections file could not be saved. Check that the local runtime folder is writable.")
             return
         editor.destroy()
         self._refresh(selected=candidate.identifier)
+
+    def _review_suggested_groups(self) -> None:
+        suggestions = suggest_compatible_groups(self.rules)
+        if not suggestions:
+            return
+        by_id = {rule.identifier: rule for rule in self.rules}
+        selected = []
+        for identifiers in suggestions:
+            rules = [by_id[identifier] for identifier in identifiers]
+            if self._confirm_suggested_group(rules):
+                selected.append(identifiers)
+        if not selected:
+            return
+        try:
+            organized = organize_suggested_groups(self.rules, selected)
+            self.rules = list(self.store.save(organized))
+        except (ConversionValidationError, OSError) as error:
+            self._status.set(
+                error.errors[0]
+                if isinstance(error, ConversionValidationError)
+                else "The corrections file could not be saved. No groups were changed."
+            )
+            return
+        self._refresh()
+
+    def _confirm_suggested_group(self, rules: list[ConversionRule]) -> bool:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Review suggested group")
+        dialog.geometry("620x420")
+        dialog.minsize(520, 360)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(2, weight=1)
+        decision = tk.BooleanVar(value=False)
+
+        heading = ttk.Frame(dialog, padding=(20, 18, 20, 10))
+        heading.grid(row=0, column=0, sticky="ew")
+        heading.columnconfigure(0, weight=1)
+        ttk.Label(
+            heading,
+            text="Group these phrases?",
+            font=("Segoe UI", 15, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            heading,
+            text="Each row below is one complete phrase, even when it contains punctuation.",
+            wraplength=560,
+        ).grid(row=1, column=0, sticky="w", pady=(5, 0))
+
+        result = ttk.Frame(dialog, padding=(20, 4, 20, 10))
+        result.grid(row=1, column=0, sticky="ew")
+        result.columnconfigure(0, weight=1)
+        ttk.Label(result, text="Breezy should type", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            result,
+            text=rules[0].replacement,
+            font=("Segoe UI", 11),
+            wraplength=560,
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        phrases_frame = ttk.LabelFrame(dialog, text="Breezy may hear", padding=10)
+        phrases_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 12))
+        phrases_frame.columnconfigure(0, weight=1)
+        phrases_frame.rowconfigure(0, weight=1)
+        phrase_list = tk.Listbox(
+            phrases_frame,
+            activestyle="none",
+            exportselection=False,
+            font=("Segoe UI", 10),
+            selectmode="none",
+        )
+        for phrase in suggestion_phrase_rows(rules):
+            phrase_list.insert("end", phrase)
+        phrase_list.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(phrases_frame, orient="vertical", command=phrase_list.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        phrase_list.configure(yscrollcommand=scrollbar.set)
+
+        actions = ttk.Frame(dialog, padding=(20, 0, 20, 18))
+        actions.grid(row=3, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+
+        def close(group: bool) -> None:
+            decision.set(group)
+            dialog.destroy()
+
+        keep_button = ttk.Button(
+            actions,
+            text="Keep separate",
+            command=lambda: close(False),
+        )
+        keep_button.grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(
+            actions,
+            text="Group phrases",
+            command=lambda: close(True),
+        ).grid(row=0, column=2)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: close(False))
+        dialog.bind("<Escape>", lambda _event: close(False))
+        dialog.bind("<Control-Return>", lambda _event: close(True))
+        keep_button.focus_set()
+        self.root.wait_window(dialog)
+        return decision.get()
 
 
 def main() -> None:

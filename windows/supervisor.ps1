@@ -1,8 +1,12 @@
 param(
-    [ValidateSet('run', 'start', 'stop', 'restart', 'status', 'disable', 'enable', 'pause-client', 'resume-client', 'install-task', 'remove-task', 'devices', 'tray-devices', 'set-microphone', 'switch-microphone', 'hotkey-health')]
+    [ValidateSet('run', 'start', 'stop', 'restart', 'status', 'disable', 'enable', 'pause-client', 'resume-client', 'install-task', 'remove-task', 'devices', 'tray-devices', 'set-microphone', 'switch-microphone', 'set-automatic-punctuation', 'set-formatting', 'hotkey-health')]
     [string]$Command = 'status',
     [int]$Device,
-    [string]$Hotkey
+    [string]$Hotkey,
+    [ValidateSet('automatic_punctuation', 'capitalize_new_paragraphs', 'capitalize_new_lines')]
+    [string]$FormattingKey,
+    [ValidateSet('true', 'false')]
+    [string]$Enabled
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,7 +28,9 @@ $ClientExe = Join-Path $Venv 'Scripts\faster-whisper-dictation.exe'
 $ClientBootstrap = Join-Path $Runtime 'client_bootstrap.pyw'
 $MicrophoneLister = Join-Path $Runtime 'list_microphones.py'
 $ManagerScript = Join-Path $Runtime 'text_conversion_manager.py'
+$FormattingUpdater = Join-Path $Runtime 'formatting_config.py'
 $Config = Join-Path $Runtime 'config.toml'
+$env:BREEZY_LOCAL_DICTATION_CONFIG_FILE = $Config
 $AutoHotkey = if ($env:BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY) {
     $env:BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY
 } else {
@@ -60,7 +66,7 @@ function Write-SupervisorLog {
 }
 
 function Assert-Install {
-    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientExe, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $HotkeyApply, $HiddenLauncher)) {
+    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientExe, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $FormattingUpdater, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $HotkeyApply, $HiddenLauncher)) {
         if (-not (Test-Path -LiteralPath $Path)) {
             throw "Required path is missing: $Path"
         }
@@ -431,6 +437,19 @@ function Set-Microphone {
     Write-Output "Microphone device set to index $Device. Restart dictation to apply."
 }
 
+function Set-FormattingValue {
+    param([Parameter(Mandatory)][string]$Key)
+    if ([string]::IsNullOrWhiteSpace($Enabled)) {
+        throw 'Formatting updates require -Enabled true or false.'
+    }
+    $value = $Enabled.ToLowerInvariant()
+    & $Python $FormattingUpdater --config $Config --key $Key --enabled $value
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not update formatting.$Key."
+    }
+    Write-Output "Formatting setting $Key set to $value."
+}
+
 function Test-HotkeyHealth {
     if ([string]::IsNullOrWhiteSpace($Hotkey)) { return $false }
     if ($null -eq (Get-LiveSupervisorPid)) { return $false }
@@ -467,6 +486,13 @@ switch ($Command) {
     'devices' { & $ClientExe devices }
     'tray-devices' { & $Python $MicrophoneLister }
     'set-microphone' { Set-Microphone }
+    'set-automatic-punctuation' { Set-FormattingValue -Key 'automatic_punctuation' }
+    'set-formatting' {
+        if ([string]::IsNullOrWhiteSpace($FormattingKey)) {
+            throw 'set-formatting requires -FormattingKey.'
+        }
+        Set-FormattingValue -Key $FormattingKey
+    }
     'hotkey-health' { if (Test-HotkeyHealth) { exit 0 } else { exit 1 } }
     'switch-microphone' {
         Set-Microphone

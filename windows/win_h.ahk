@@ -15,11 +15,16 @@ HotkeyResultPath := Runtime "\hotkey_change.result.json"
 ManagerPythonw := Runtime "\.venv\Scripts\pythonw.exe"
 ManagerScript := Runtime "\text_conversion_manager.py"
 ConfigPath := Runtime "\config.toml"
+AutomaticPunctuationEnabled := ReadAutomaticPunctuation(ConfigPath)
+CapitalizeNewParagraphsEnabled := ReadFormattingSetting(ConfigPath, "capitalize_new_paragraphs", true)
+CapitalizeNewLinesEnabled := ReadFormattingSetting(ConfigPath, "capitalize_new_lines", true)
 RecordingStatePath := Runtime "\recording.active"
+ManualLineBreakSignalPath := Runtime "\manual_line_break.signal"
 IdleIconPath := Runtime "\assets\dictation_idle.ico"
 RecordingIconPath := Runtime "\assets\dictation_recording.ico"
 LastRecordingState := -1
 MicrophoneMenu := Menu()
+CapitalizationMenu := Menu()
 CaptureSession := 0
 UserHotkey := EnvGet("BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY")
 if (UserHotkey = "")
@@ -32,7 +37,17 @@ A_TrayMenu.Add()
 A_TrayMenu.Add("Microphone", MicrophoneMenu)
 A_TrayMenu.Add("Refresh microphone list", RefreshMicrophones)
 A_TrayMenu.Add("Change activation hotkey…", ChangeActivationHotkey)
-A_TrayMenu.Add("Manage text conversions…", ManageTextConversions)
+A_TrayMenu.Add("Automatic punctuation", ToggleAutomaticPunctuation)
+if AutomaticPunctuationEnabled
+    A_TrayMenu.Check("Automatic punctuation")
+CapitalizationMenu.Add("Capitalize new paragraphs", ToggleCapitalizeNewParagraphs)
+CapitalizationMenu.Add("Capitalize new lines", ToggleCapitalizeNewLines)
+if CapitalizeNewParagraphsEnabled
+    CapitalizationMenu.Check("Capitalize new paragraphs")
+if CapitalizeNewLinesEnabled
+    CapitalizationMenu.Check("Capitalize new lines")
+A_TrayMenu.Add("Capitalization", CapitalizationMenu)
+A_TrayMenu.Add("Dictation corrections…", ManageTextConversions)
 A_TrayMenu.Add()
 A_TrayMenu.Add("Disable dictation & AutoHotkey (until restart)", DisableDictation)
 A_TrayMenu.Add("Enable dictation", EnableDictation)
@@ -45,6 +60,9 @@ UpdateRecordingIcon()
 SetTimer(UpdateRecordingIcon, 150)
 
 Hotkey UserHotkey, HandleDictationHotkey
+#HotIf FileExist(RecordingStatePath)
+~*Enter::RecordManualLineBreak()
+#HotIf
 PublishHotkeyReady()
 if FileExist(HotkeyPendingPath)
     SetTimer(CheckHotkeyChangeResult, 250)
@@ -70,6 +88,38 @@ ToggleDictation(*) {
         return
     }
     SendEvent "^!+{F24}"
+}
+
+RecordManualLineBreak(*) {
+    global RecordingStatePath, ManualLineBreakSignalPath
+    if !FileExist(RecordingStatePath)
+        return
+    if GetKeyState("Ctrl", "P") || GetKeyState("Alt", "P")
+        || GetKeyState("LWin", "P") || GetKeyState("RWin", "P")
+        return
+
+    foregroundWindow := WinExist("A")
+    if !foregroundWindow
+        return
+
+    breakCount := 0
+    if FileExist(ManualLineBreakSignalPath) {
+        try existingSignal := Trim(FileRead(ManualLineBreakSignalPath, "UTF-8"))
+        catch
+            existingSignal := ""
+        if RegExMatch(existingSignal, "^(\d+):([12])$", &existing)
+            && Integer(existing[1]) = foregroundWindow
+            breakCount := Integer(existing[2])
+    }
+    breakCount := Min(breakCount + 1, 2)
+    temporaryPath := ManualLineBreakSignalPath ".tmp." DllCall("GetCurrentProcessId") "." A_TickCount
+    try {
+        FileAppend(foregroundWindow ":" breakCount "`n", temporaryPath, "UTF-8-RAW")
+        FileMove(temporaryPath, ManualLineBreakSignalPath, 1)
+    } catch {
+        try FileDelete(temporaryPath)
+    }
+    KeyWait "Enter"
 }
 
 RefreshMicrophones(*) {
@@ -325,6 +375,86 @@ ReadCurrentDeviceIndex(configPath) {
             return Integer(device[1])
     }
     return -1
+}
+
+ReadAutomaticPunctuation(configPath) {
+    if !FileExist(configPath)
+        return false
+    return ReadFormattingSetting(configPath, "automatic_punctuation", true)
+}
+
+ReadFormattingSetting(configPath, key, missingDefault) {
+    if !FileExist(configPath)
+        return missingDefault
+    try {
+        configText := FileRead(configPath, "UTF-8")
+        if RegExMatch(configText, "ims)^\[formatting\].*?^" key "\s*=\s*(true|false)", &setting)
+            return StrLower(setting[1]) = "true"
+        return missingDefault
+    }
+    return missingDefault
+}
+
+SetFormattingValue(key, nextValue) {
+    global SupervisorPath, Runtime
+    enabledText := nextValue ? "true" : "false"
+    command := "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"" SupervisorPath "`" set-formatting -FormattingKey " key " -Enabled " enabledText
+    return RunWait(command, Runtime, "Hide") = 0
+}
+
+ToggleAutomaticPunctuation(*) {
+    global AutomaticPunctuationEnabled
+    nextValue := !AutomaticPunctuationEnabled
+    if !SetFormattingValue("automatic_punctuation", nextValue) {
+        TrayTip("Automatic punctuation could not be changed.", "Breezy Local Streaming Dictation")
+        return
+    }
+    AutomaticPunctuationEnabled := nextValue
+    if nextValue
+        A_TrayMenu.Check("Automatic punctuation")
+    else
+        A_TrayMenu.Uncheck("Automatic punctuation")
+    TrayTip("Automatic punctuation " (nextValue ? "enabled" : "disabled") ". Applies the next time you start recording.", "Breezy Local Streaming Dictation")
+}
+
+ToggleCapitalizeNewParagraphs(*) {
+    global CapitalizeNewParagraphsEnabled, CapitalizationMenu
+    nextValue := !CapitalizeNewParagraphsEnabled
+    if !SetFormattingValue("capitalize_new_paragraphs", nextValue) {
+        TrayTip("Paragraph capitalization could not be changed.", "Breezy Local Streaming Dictation")
+        return
+    }
+    CapitalizeNewParagraphsEnabled := nextValue
+    if nextValue
+        CapitalizationMenu.Check("Capitalize new paragraphs")
+    else
+        CapitalizationMenu.Uncheck("Capitalize new paragraphs")
+    TrayTip(
+        nextValue
+            ? "New paragraphs and empty documents will begin with a capital letter. Applies to the next utterance."
+            : "New paragraphs and empty documents will keep the recognized capitalization. Applies to the next utterance.",
+        "Breezy Local Streaming Dictation"
+    )
+}
+
+ToggleCapitalizeNewLines(*) {
+    global CapitalizeNewLinesEnabled, CapitalizationMenu
+    nextValue := !CapitalizeNewLinesEnabled
+    if !SetFormattingValue("capitalize_new_lines", nextValue) {
+        TrayTip("Line capitalization could not be changed.", "Breezy Local Streaming Dictation")
+        return
+    }
+    CapitalizeNewLinesEnabled := nextValue
+    if nextValue
+        CapitalizationMenu.Check("Capitalize new lines")
+    else
+        CapitalizationMenu.Uncheck("Capitalize new lines")
+    TrayTip(
+        nextValue
+            ? "Text after one line break will begin with a capital letter. Applies to the next utterance."
+            : "Text after one line break will keep the recognized capitalization. Applies to the next utterance.",
+        "Breezy Local Streaming Dictation"
+    )
 }
 
 SelectMicrophone(deviceIndex, deviceName, *) {

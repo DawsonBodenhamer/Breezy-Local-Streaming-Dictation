@@ -17,15 +17,17 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .audio import AudioStream
-from .caret_context import CaretContext, get_caret_context
-from .config import CONFIG_DIR, Config
+from .caret_context import CaretContext, classify_casing_context, get_caret_context
+from .config import CONFIG_DIR, Config, load_config
 from .conversions import ConversionStore
 from .engine import TranscriptionEngine, create_engine, create_ws_engine
 from .engine.local import (
     EXPLICIT_DOT_COMMAND,
     LocalEngine,
     PathologicalDecoderOutput,
-    apply_contextual_phrase_casing,
+    StreamingNumberNormalizer,
+    apply_automatic_punctuation_setting,
+    format_spoken_boundaries,
     guard_pathological_decoder_output,
     guard_pathological_repetition,
     normalize_spoken_numbers,
@@ -40,8 +42,87 @@ if TYPE_CHECKING:
     from .engine.whisperlivekit import WhisperLiveKitEngine
 
 log = logging.getLogger(__name__)
+
+
+class ManualLineBreakSignal:
+    """Consume a content-free, originating-window-bound manual newline marker."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        if path is not None:
+            self.path = path
+            return
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        runtime_dir = (
+            Path(local_app_data) / "breezy_local_streaming_dictation"
+            if local_app_data
+            else CONFIG_DIR
+        )
+        self.path = runtime_dir / "manual_line_break.signal"
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            log.debug("Manual-line-break signal cleanup failed", exc_info=True)
+
+    def consume(self, foreground_window_handle: int | None) -> int:
+        try:
+            value = self.path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            self.clear()
+            return 0
+        self.clear()
+        if not value.isascii():
+            return 0
+        if ":" in value:
+            handle_text, count_text = value.split(":", 1)
+        else:
+            handle_text, count_text = value, "1"
+        if not handle_text.isdecimal() or count_text not in ("1", "2"):
+            return 0
+        if not isinstance(foreground_window_handle, int):
+            return 0
+        recorded_window_handle = int(handle_text)
+        if not (
+            recorded_window_handle > 0
+            and foreground_window_handle > 0
+            and recorded_window_handle == foreground_window_handle
+        ):
+            return 0
+        return int(count_text)
+
+
+def get_foreground_window_handle() -> int:
+    """Return the actual foreground top-level window handle without reading content."""
+    if sys.platform != "win32":
+        return 0
+    try:
+        import ctypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        return int(user32.GetForegroundWindow() or 0)
+    except Exception:
+        log.debug("Foreground-window handle lookup failed", exc_info=True)
+        return 0
+
+
+def uppercase_phrase_initial(text: str) -> str:
+    """Uppercase only the first alphabetic character in a phrase."""
+    return re.sub(
+        r"[A-Za-z]",
+        lambda match: match.group(0).upper(),
+        text,
+        count=1,
+    )
+
+
 _ALL_CAPS_COMMAND_RE = re.compile(
-    r"(?:[,.!?;:]\s*)?\ball caps (on|off)\b(?:\s*[,.!?;:])?",
+    r"(?:"
+    r"(?:[,.!?;:]\s*)?\ball caps (?P<explicit>on|off)\b(?:\s*[,.!?;:])?"
+    r"|(?:[,.!?;:]\s*)?\b(?P<toggle>caps lock)\b"
+    r"(?!\s+key\b)(?:\s*[,.!?;:])?"
+    r")",
     re.IGNORECASE,
 )
 _BACKTICK_COMMAND = "\ue000"
@@ -54,6 +135,7 @@ _FORMAT_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 _DEFAULT_FORMATTING_TIMEOUT_S = 2.0
+_DEFAULT_NUMBER_FLUSH_TIMEOUT_S = 0.1
 
 
 class SessionEmissionHistory:
@@ -199,7 +281,8 @@ def apply_all_caps_commands(text: str, active: bool) -> tuple[str, bool]:
     for match in _ALL_CAPS_COMMAND_RE.finditer(text):
         portion = text[cursor:match.start()]
         output.append(portion.upper() if active else portion)
-        active = match.group(1).lower() == "on"
+        command = match.group("explicit")
+        active = not active if command is None else command.lower() == "on"
         cursor = match.end()
 
     portion = text[cursor:]
@@ -372,6 +455,7 @@ class DictationDaemon:
         self._running = threading.Event()
         self._stop_event = threading.Event()
         self._recording = False
+        self._finalization_pending = False
         self._recording_start: float = 0.0
         self._recorded_chunks: list[np.ndarray] = []
         # Cap batch audio buffer to prevent unbounded memory growth.
@@ -393,6 +477,20 @@ class DictationDaemon:
         self._cap_next: bool = False
         self._backtick_active: bool = False
         self._quote_state = QuoteState()
+        self._manual_line_break_signal = ManualLineBreakSignal()
+        self._number_normalizer = StreamingNumberNormalizer()
+        self._number_lock = threading.Lock()
+        self._number_flush_timer: threading.Timer | None = None
+        self._number_flush_generation = 0
+        self._number_flush_timeout_s = _DEFAULT_NUMBER_FLUSH_TIMEOUT_S
+        self._automatic_punctuation_for_recording = config.formatting.automatic_punctuation
+        self._capitalize_new_paragraphs = config.formatting.capitalize_new_paragraphs
+        self._capitalize_new_lines = config.formatting.capitalize_new_lines
+        self._pending_spoken_boundary = "none"
+        runtime_config_path = os.environ.get("BREEZY_LOCAL_DICTATION_CONFIG_FILE")
+        self._runtime_config_path = (
+            Path(runtime_config_path) if runtime_config_path else None
+        )
         self._formatting_timeout_s: float = _DEFAULT_FORMATTING_TIMEOUT_S
         self._last_speech_end_time: float = 0.0
         self._emission_history = SessionEmissionHistory()
@@ -410,17 +508,158 @@ class DictationDaemon:
         """Create the WhisperLiveKit WebSocket engine."""
         return create_ws_engine(self.config, **kwargs)  # type: ignore[return-value]
 
-    def _apply_user_conversions(self, text: str) -> str:
+    def _apply_user_conversions(
+        self,
+        text: str,
+        *,
+        match_text: str | None = None,
+    ) -> str:
         """Apply user rules once without weakening existing safety gates."""
         store = getattr(self, "_conversion_store", None)
         if store is None:
             store = ConversionStore()
             self._conversion_store = store
         try:
-            return store.apply(text)
+            return store.apply(text, match_text=match_text)
         except Exception:
             log.error("Text conversion application failed", exc_info=True)
             return text
+
+    def _refresh_capitalization_settings(self) -> None:
+        """Refresh only next-utterance capitalization controls from runtime TOML."""
+        if self._runtime_config_path is None or not self._runtime_config_path.exists():
+            return
+        try:
+            formatting = load_config(self._runtime_config_path).formatting
+            self._capitalize_new_paragraphs = formatting.capitalize_new_paragraphs
+            self._capitalize_new_lines = formatting.capitalize_new_lines
+        except Exception:
+            log.warning(
+                "Could not refresh capitalization settings; retaining prior values."
+            )
+
+    def _apply_boundary_casing_and_conversions(
+        self,
+        text: str,
+        caret_context: CaretContext,
+        manual_break_count: int = 0,
+        *,
+        preserve_when_none: bool = False,
+    ) -> str:
+        """Case output from uncased match text, then apply corrections exactly once."""
+        self._refresh_capitalization_settings()
+        boundary = classify_casing_context(caret_context, manual_break_count)
+        cased, match_text, pending_boundary = format_spoken_boundaries(
+            text,
+            initial_boundary=boundary,
+            pending_boundary=self._pending_spoken_boundary,
+            capitalize_new_paragraphs=self._capitalize_new_paragraphs,
+            capitalize_new_lines=self._capitalize_new_lines,
+            preserve_initial_when_none=preserve_when_none,
+        )
+        self._pending_spoken_boundary = pending_boundary
+        return self._apply_user_conversions(cased, match_text=match_text)
+
+    def _normalize_numbers(self, text: str) -> str:
+        if not self.streaming:
+            return normalize_spoken_numbers(text)
+        with self._number_lock:
+            self._cancel_number_flush_locked()
+            return self._number_normalizer.feed(text)
+
+    def _cancel_number_flush_locked(self) -> None:
+        self._number_flush_generation += 1
+        if self._number_flush_timer is not None:
+            self._number_flush_timer.cancel()
+            self._number_flush_timer = None
+
+    def _reset_number_normalizer(self) -> None:
+        with self._number_lock:
+            self._cancel_number_flush_locked()
+            self._number_normalizer.reset()
+
+    def _defer_pending_number_flush_for_speech(self) -> None:
+        with self._number_lock:
+            if self._number_flush_timer is not None:
+                self._cancel_number_flush_locked()
+
+    def _has_pending_number(self) -> bool:
+        with self._number_lock:
+            return self._number_normalizer.has_pending
+
+    def _schedule_pending_number_flush(self, expected_target: object) -> None:
+        with self._number_lock:
+            if not self._number_normalizer.has_pending:
+                return
+            self._cancel_number_flush_locked()
+            generation = self._number_flush_generation
+            timer = threading.Timer(
+                self._number_flush_timeout_s,
+                self._flush_pending_number_and_type,
+                kwargs={
+                    "expected_target": expected_target,
+                    "generation": generation,
+                },
+            )
+            timer.daemon = True
+            self._number_flush_timer = timer
+            timer.start()
+
+    def _consume_manual_line_break(self) -> int:
+        if not self._manual_line_break_signal.path.exists():
+            return 0
+        return self._manual_line_break_signal.consume(
+            get_foreground_window_handle()
+        )
+
+    def _discard_manual_line_break(self) -> None:
+        if self._manual_line_break_signal.path.exists():
+            self._manual_line_break_signal.clear()
+
+    def _finalize_recording_boundaries(self) -> None:
+        """Clear manual and spoken boundary state after queued final output."""
+        self._manual_line_break_signal.clear()
+        with self._lock:
+            self._pending_spoken_boundary = "none"
+            self._finalization_pending = False
+
+    def _flush_pending_number_and_type(
+        self,
+        *,
+        expected_target: object | None = None,
+        generation: int | None = None,
+    ) -> None:
+        with self._number_lock:
+            if generation is not None and generation != self._number_flush_generation:
+                return
+            self._cancel_number_flush_locked()
+            text = self._number_normalizer.flush()
+        if not text:
+            return
+        caret_context = get_caret_context()
+        if (
+            not caret_context.injection_allowed
+            or (
+                expected_target is not None
+                and caret_context.target != expected_target
+            )
+        ):
+            self._discard_manual_line_break()
+            _log_focus_rejection(caret_context, "pending_number")
+            return
+        manual_line_break = self._consume_manual_line_break()
+        text = self._apply_boundary_casing_and_conversions(
+            text,
+            caret_context,
+            manual_line_break,
+        )
+        injection = self._prepare_ws_injection(
+            text,
+            caret_context=caret_context,
+            manual_line_break=manual_line_break,
+        )
+        if injection:
+            type_text(injection, expected_target=caret_context.target)
 
     def _on_audio_chunk(self, audio: np.ndarray) -> None:
         """Called for each audio chunk from the microphone.
@@ -452,6 +691,9 @@ class DictationDaemon:
             log.error("VAD processing failed", exc_info=True)
             return
 
+        if self._vad.is_speaking:
+            self._defer_pending_number_flush_for_speech()
+
         if complete and utterance is not None:
             utterance_end_time = time.monotonic()
             self._transcribe_pool.submit(
@@ -477,20 +719,28 @@ class DictationDaemon:
             return
         if not cleaned:
             return
-        cleaned = normalize_spoken_numbers(cleaned)
-        cleaned = guard_pathological_repetition(cleaned)
+        cleaned = apply_automatic_punctuation_setting(
+            cleaned,
+            self._automatic_punctuation_for_recording,
+            preserve_spoken_boundaries=True,
+        )
+        cleaned = self._normalize_numbers(cleaned)
         caret_context = get_caret_context()
         if not caret_context.injection_allowed:
+            if self._has_pending_number():
+                self._reset_number_normalizer()
+            self._discard_manual_line_break()
             _log_focus_rejection(caret_context, "websocket_stream")
             return
-        cleaned = apply_contextual_phrase_casing(
-            cleaned,
-            capitalize=caret_context.should_capitalize,
-        )
-        cleaned = self._apply_user_conversions(cleaned)
+        if self._has_pending_number():
+            self._schedule_pending_number_flush(caret_context.target)
+        if not cleaned:
+            return
+        cleaned = guard_pathological_repetition(cleaned)
+        uncased_cleaned = cleaned
         # Suppress hallucination loops (e.g. "Thank you" repeated during silence).
         # Allow up to _WS_MAX_REPEATS identical emissions, then suppress.
-        normalized = cleaned.lower().rstrip(".,!?")
+        normalized = uncased_cleaned.lower().rstrip(".,!?")
         with self._lock:
             if normalized == self._last_ws_text:
                 self._ws_repeat_count += 1
@@ -500,11 +750,18 @@ class DictationDaemon:
             else:
                 self._last_ws_text = normalized
                 self._ws_repeat_count = 0
+        manual_line_break = self._consume_manual_line_break()
+        cleaned = self._apply_boundary_casing_and_conversions(
+            uncased_cleaned,
+            caret_context,
+            manual_line_break,
+        )
         try:
             type_text(
                 self._prepare_ws_injection(
                     cleaned,
                     caret_context=caret_context,
+                    manual_line_break=manual_line_break,
                 ),
                 expected_target=caret_context.target,
             )
@@ -516,6 +773,7 @@ class DictationDaemon:
         self,
         cleaned: str,
         caret_context: CaretContext | None = None,
+        manual_line_break: bool = False,
     ) -> str:
         """Join text using actual caret surroundings when UIA is available."""
         no_leading_space = (
@@ -552,6 +810,7 @@ class DictationDaemon:
             if caret_context is not None and caret_context.available:
                 needs_space = (
                     not caret_context.has_selection
+                    and not manual_line_break
                     and bool(previous_char)
                     and not previous_char.isspace()
                     and not cleaned[0].isspace()
@@ -574,6 +833,8 @@ class DictationDaemon:
             else:
                 needs_space = (
                     self._ws_has_output
+                    and not manual_line_break
+                    and not self._ws_last_char.isspace()
                     and not cleaned[0].isspace()
                     and cleaned[0] not in no_leading_space
                     and self._ws_last_char not in no_space_after
@@ -596,48 +857,58 @@ class DictationDaemon:
         self,
         audio: np.ndarray,
         utterance_end_time: float | None = None,
+        automatic_punctuation: bool | None = None,
     ) -> None:
         """Transcribe audio and type the result."""
         if utterance_end_time is None:
             utterance_end_time = time.monotonic()
         audio_duration = len(audio) / self.config.audio.sample_rate
         speech_start_time = utterance_end_time - audio_duration
+        if automatic_punctuation is None:
+            automatic_punctuation = self._automatic_punctuation_for_recording
 
         try:
-            if self.streaming and isinstance(self._engine, LocalEngine):
+            if isinstance(self._engine, LocalEngine):
                 raw_text = self._engine.transcribe(
                     audio,
                     self.config.audio.sample_rate,
-                    vad_filter=False,
+                    vad_filter=not self.streaming,
+                    automatic_punctuation=automatic_punctuation,
+                    normalize_numbers=not self.streaming,
+                    preserve_spoken_boundaries=True,
                 )
             else:
                 raw_text = self._engine.transcribe(
                     audio,
                     self.config.audio.sample_rate,
                 )
+                raw_text = apply_automatic_punctuation_setting(
+                    raw_text,
+                    automatic_punctuation,
+                    preserve_spoken_boundaries=True,
+                )
             text = guard_pathological_decoder_output(
                 self._remove_prompt_leak(raw_text)
             )
-            text = guard_pathological_repetition(normalize_spoken_numbers(text))
+            text = guard_pathological_repetition(self._normalize_numbers(text))
             caret_context = get_caret_context()
             if not caret_context.injection_allowed:
+                if self._has_pending_number():
+                    self._reset_number_normalizer()
+                self._discard_manual_line_break()
                 _log_focus_rejection(caret_context, "local")
                 return
-            if self.config.engine.type == "local":
-                text = apply_contextual_phrase_casing(
-                    text,
-                    capitalize=(
-                        caret_context.available
-                        and caret_context.should_capitalize
-                    ),
-                )
-            text = self._apply_user_conversions(text)
+            if self._has_pending_number():
+                self._schedule_pending_number_flush(caret_context.target)
+            if not text:
+                return
             if (
                 self.streaming
                 and not self._use_ws
                 and not self._emission_history.accept(text)
             ):
                 return
+            manual_line_break = False
             with self._lock:
                 if (
                     self._last_speech_end_time > 0.0
@@ -648,29 +919,64 @@ class DictationDaemon:
                     self._caps_active = False
                     self._cap_next = False
 
-                text, self._all_caps_active = apply_all_caps_commands(
+                original_all_caps = self._all_caps_active
+                original_caps = self._caps_active
+                original_cap_next = self._cap_next
+                original_backtick = self._backtick_active
+                original_quote = self._quote_state
+
+                preview, preview_all_caps = apply_all_caps_commands(
                     text,
-                    self._all_caps_active,
+                    original_all_caps,
                 )
-                text, self._caps_active, self._cap_next = apply_formatting_commands(
-                    text,
-                    self._caps_active,
-                    self._cap_next,
+                preview, preview_caps, preview_cap_next = apply_formatting_commands(
+                    preview,
+                    original_caps,
+                    original_cap_next,
                 )
-                text, self._backtick_active = apply_backtick_commands(
-                    text,
-                    self._backtick_active,
+                preview, preview_backtick = apply_backtick_commands(
+                    preview,
+                    original_backtick,
                 )
-                text, self._quote_state = apply_quote_commands(
-                    text,
-                    self._quote_state,
+                preview, preview_quote = apply_quote_commands(
+                    preview,
+                    original_quote,
                 )
+
+                if preview and self.streaming:
+                    manual_line_break = self._consume_manual_line_break()
+                if preview:
+                    formatting_casing_active = any(
+                        (
+                            original_all_caps,
+                            original_caps,
+                            original_cap_next,
+                            preview_all_caps,
+                            preview_caps,
+                            preview_cap_next,
+                        )
+                    )
+                    text = self._apply_boundary_casing_and_conversions(
+                        preview,
+                        caret_context,
+                        manual_line_break,
+                        preserve_when_none=formatting_casing_active,
+                    )
+                else:
+                    text = ""
+
+                self._all_caps_active = preview_all_caps
+                self._caps_active = preview_caps
+                self._cap_next = preview_cap_next
+                self._backtick_active = preview_backtick
+                self._quote_state = preview_quote
                 self._last_speech_end_time = utterance_end_time
             if text:
                 injection = (
                     self._prepare_ws_injection(
                         text,
                         caret_context=caret_context,
+                        manual_line_break=manual_line_break,
                     )
                     if self.streaming
                     else text.replace(EXPLICIT_DOT_COMMAND, ".") + " "
@@ -705,6 +1011,7 @@ class DictationDaemon:
                 try:
                     caret_context = get_caret_context()
                     if not caret_context.injection_allowed:
+                        self._discard_manual_line_break()
                         _log_focus_rejection(caret_context, "websocket_pending")
                         return
                     cleaned = guard_pathological_decoder_output(
@@ -712,17 +1019,27 @@ class DictationDaemon:
                     )
                     if not cleaned.strip():
                         return
-                    cleaned = apply_contextual_phrase_casing(
-                        guard_pathological_repetition(
-                            normalize_spoken_numbers(cleaned.strip())
-                        ),
-                        capitalize=caret_context.should_capitalize,
+                    cleaned = apply_automatic_punctuation_setting(
+                        cleaned.strip(),
+                        self._automatic_punctuation_for_recording,
+                        preserve_spoken_boundaries=True,
                     )
-                    cleaned = self._apply_user_conversions(cleaned)
+                    cleaned = self._normalize_numbers(cleaned)
+                    if not cleaned:
+                        return
+                    cleaned = guard_pathological_repetition(cleaned)
+                    pre_correction_text = cleaned
+                    manual_line_break = self._consume_manual_line_break()
+                    cleaned = self._apply_boundary_casing_and_conversions(
+                        pre_correction_text,
+                        caret_context,
+                        manual_line_break,
+                    )
                     type_text(
                         self._prepare_ws_injection(
                             cleaned,
                             caret_context=caret_context,
+                            manual_line_break=manual_line_break,
                         ),
                         expected_target=caret_context.target,
                     )
@@ -733,6 +1050,11 @@ class DictationDaemon:
         except Exception:
             log.error("WS streaming deactivation failed", exc_info=True)
         finally:
+            try:
+                self._flush_pending_number_and_type()
+            except Exception:
+                log.error("Typing pending number failed", exc_info=True)
+            self._finalize_recording_boundaries()
             ws_engine.close()
 
     def _transcribe_batch_ws(self, audio: np.ndarray) -> None:
@@ -762,7 +1084,17 @@ class DictationDaemon:
                     _log_focus_rejection(caret_context, "websocket_batch")
                     return
                 text = normalize_spoken_numbers(text)
-                text = self._apply_user_conversions(text)
+                text = apply_automatic_punctuation_setting(
+                    text,
+                    self._automatic_punctuation_for_recording,
+                    preserve_spoken_boundaries=True,
+                )
+                manual_line_break = self._consume_manual_line_break()
+                text = self._apply_boundary_casing_and_conversions(
+                    text,
+                    caret_context,
+                    manual_line_break,
+                )
                 type_text(text + " ", expected_target=caret_context.target)
                 log.debug("WS batch typed: %d chars", len(text))
             else:
@@ -777,7 +1109,24 @@ class DictationDaemon:
         with self._lock:
             if self._recording:
                 return
+            if self._finalization_pending:
+                notify(
+                    "Finishing dictation",
+                    "Wait for the previous dictation to finish, then try again.",
+                )
+                return
+            self._manual_line_break_signal.clear()
             self._recording = True
+            try:
+                if (
+                    self._runtime_config_path is not None
+                    and self._runtime_config_path.exists()
+                ):
+                    self._automatic_punctuation_for_recording = load_config(
+                        self._runtime_config_path
+                    ).formatting.automatic_punctuation
+            except Exception:
+                log.warning("Could not refresh automatic punctuation setting; retaining prior value.")
             self._recorded_chunks.clear()
             self._recording_start = time.monotonic()
             self._last_ws_text = ""
@@ -789,8 +1138,15 @@ class DictationDaemon:
             self._cap_next = False
             self._backtick_active = False
             self._quote_state = QuoteState()
+            self._pending_spoken_boundary = "none"
             self._last_speech_end_time = 0.0
             self._emission_history.reset()
+        if self.streaming and not self._use_ws:
+            # Keep the reset behind any prior recording's queued fragments and
+            # final flush, while still placing it before this recording's VAD work.
+            self._transcribe_pool.submit(self._reset_number_normalizer)
+        else:
+            self._reset_number_normalizer()
         log.info("Recording started (use_ws=%s, streaming=%s, engine=%s)",
                  self._use_ws, self.streaming, self.config.engine.type)
 
@@ -847,6 +1203,7 @@ class DictationDaemon:
             if not self._recording:
                 return
             self._recording = False
+            self._finalization_pending = True
             chunks = list(self._recorded_chunks)
             self._recorded_chunks.clear()
             audio = self._audio
@@ -882,6 +1239,8 @@ class DictationDaemon:
                     remaining,
                     utterance_end_time,
                 )
+            self._transcribe_pool.submit(self._flush_pending_number_and_type)
+            self._transcribe_pool.submit(self._finalize_recording_boundaries)
         elif chunks:
             # Batch mode: transcribe the full recording at once
             full_audio = np.concatenate(chunks)
@@ -896,8 +1255,10 @@ class DictationDaemon:
                     full_audio,
                     time.monotonic(),
                 )
+            self._transcribe_pool.submit(self._finalize_recording_boundaries)
         else:
             log.info("No audio recorded")
+            self._finalize_recording_boundaries()
 
     def _check_server_available(self) -> bool:
         """Check if the transcription server is reachable."""

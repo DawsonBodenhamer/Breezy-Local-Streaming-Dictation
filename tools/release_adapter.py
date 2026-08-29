@@ -24,6 +24,7 @@ REQUIRED_ARCHIVE_FILES = ARCHIVE_ROOT_FILES | {
     "config/config.example.toml", "config/runtime.example.env", "windows/supervisor.ps1", "windows/win_h.ahk",
     "windows/hotkey_capture.ahk", "windows/hotkey_apply.ps1", "windows/client_bootstrap.pyw",
     "windows/list_microphones.py", "windows/startup_hidden.vbs", "windows/text_conversion_manager.py",
+    "windows/formatting_config.py",
     "assets/breezy_local_streaming_dictation_icon_hd.png", "assets/local_dictation_start.wav",
     "assets/local_dictation_stop.wav", "assets/tray_menu.png", "licenses/faster-whisper-dictation-MIT.txt",
     "src/whisper_dictation/__init__.py", "src/whisper_dictation/engine/local.py",

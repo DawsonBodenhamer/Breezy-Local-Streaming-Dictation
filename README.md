@@ -1,6 +1,6 @@
 <h1 align="center">Breezy Local Streaming Dictation</h1>
 
-<p align="center"><strong>Fast, accurate, private voice typing that keeps pace with the conversation in your head.</strong></p>
+<p align="center"><strong>Streaming voice typing that puts accurate, punctuated text on screen while you speak.</strong></p>
 
 <p align="center">
   <a href="#what-you-need"><img src="https://img.shields.io/badge/Windows-11-3776AB?style=for-the-badge&logo=windows11&logoColor=white" alt="Windows 11"></a>
@@ -15,7 +15,7 @@
 
 ## Why I made it
 
-The dictation tools I found either came with another subscription or made me record first and wait for the result. Built-in Windows dictation also missed too many words, especially names and technical terms. In side-by-side tests using the same spoken phrase, this WhisperLiveKit dictation model made far fewer mistakes. I wanted that accuracy in something local that put words on screen while I spoke, let me keep typing, understood punctuation, and learned my vocabulary through easily accessible settings.
+The dictation tools I found either came with another subscription or made me record first and wait for the result. I wanted words to appear while I spoke, with reliable recognition and punctuation I could control, without giving up speed. Breezy also processes microphone audio locally and learns recurring names and terminology through accessible corrections.
 
 <br clear="left">
 
@@ -75,7 +75,7 @@ Memory figures are approximate and real usage varies by hardware. See the [Whisp
    powershell -ExecutionPolicy Bypass -File .\setup.ps1
    ```
 
-Setup guides you through the install location, model storage, compute mode, microphone, and startup preference. **Automatic** uses NVIDIA CUDA when it is available and falls back to CPU INT8 otherwise; you can also select either mode explicitly. The activation hotkey starts as `Win+H` and can be changed from the tray. Running setup again keeps your text conversions intact.
+Setup guides you through the install location, model storage, compute mode, microphone, and startup preference. **Automatic** uses NVIDIA CUDA when it is available and falls back to CPU INT8 otherwise; you can also select either mode explicitly. The activation hotkey starts as `Win+H` and can be changed from the tray. Automatic punctuation starts off on a fresh installation. Running setup again keeps your dictation corrections and punctuation choice intact.
 
 ## Your first sentence
 
@@ -95,11 +95,19 @@ Choose a microphone from the tray, focus an editable text field, and press your 
     <tr>
       <td><strong>Microphone</strong></td>
       <td>Switch the active input.</td>
-      <td rowspan="6" valign="top"><img src="assets/tray_menu.png" width="100%" alt="Breezy Local Streaming Dictation tray menu with hotkey and text conversion controls"></td>
+      <td rowspan="8" valign="top"><img src="assets/tray_menu.png" width="100%" alt="Breezy Local Streaming Dictation tray menu with hotkey and correction controls"></td>
     </tr>
     <tr>
-      <td><strong>Manage text conversions…</strong></td>
-      <td>Add personal vocabulary and recurring corrections.</td>
+      <td><strong>Automatic punctuation</strong></td>
+      <td>Let Breezy infer commas and question marks. Leave it off when you prefer to dictate punctuation yourself.</td>
+    </tr>
+    <tr>
+      <td><strong>Capitalization</strong></td>
+      <td>Choose independently whether text after a new paragraph or one new line begins with a capital letter.</td>
+    </tr>
+    <tr>
+      <td><strong>Dictation corrections…</strong></td>
+      <td>Map one or more phrases Breezy may hear to the exact text it should type.</td>
     </tr>
     <tr>
       <td><strong>Change activation hotkey…</strong></td>
@@ -120,9 +128,30 @@ Choose a microphone from the tray, focus an editable text field, and press your 
   </tbody>
 </table>
 
-### Personal text conversions
+### Dictation corrections
 
-Tell dictation what you expect to say and what should appear instead. You can choose whether capitalization matters and whether the phrase must appear as separate words. Changes take effect without restarting dictation.
+One correction contains one or more phrases Breezy may hear and the exact text Breezy should type. You can choose whether capitalization matters and whether each phrase must appear as complete words. Changes take effect without restarting dictation. Existing one-phrase correction files remain active and are upgraded only after you explicitly save or organize them.
+
+### Punctuation you can say
+
+You can dictate sentence punctuation with `comma`, `period`, `question mark`, `exclamation mark`, `semicolon`, and `colon`. Breezy also understands `open quote`, `close quote`, parentheses, brackets, `em dash`, `hyphen`, `slash`, `underscore`, `backtick`, `new line`, and `new paragraph`.
+
+The tray's **Automatic punctuation** choice controls punctuation Breezy infers rather than punctuation you say. It is off on fresh installations. When it is off, spoken punctuation commands, contractions, software versions such as `1.20.3`, and clock times such as `5:37 PM` remain intact.
+
+### Temporary all caps
+
+Say `caps lock` to turn temporary all caps on wherever the command appears in an utterance; words after it are capitalized while words before it are preserved. Say `caps lock` again within two seconds to turn it off, or let two seconds of silence pass and it expires automatically before your next phrase. For example, `now I'm testing caps lock is this capitalized` types `now I'm testing IS THIS CAPITALIZED`. The ordinary phrase `caps lock key` remains text. The existing `all caps on` and `all caps off` commands remain available.
+
+### Capitalization after line breaks
+
+The tray's **Capitalization** submenu has two independent choices:
+
+- **Capitalize new paragraphs** applies after a blank line and at the beginning of an empty document. For example, saying `new paragraph hello` types a blank line followed by `Hello` when this choice is on.
+- **Capitalize new lines** applies after one line break. For example, saying `new line hello` types the next line as `Hello` when this choice is on.
+
+A blank-line paragraph always uses the paragraph choice, not the line choice. Turning a choice off keeps the capitalization Breezy recognized instead of forcing the first ordinary word to uppercase. These choices do not capitalize every sentence after a period; sentence-internal capitalization remains separate.
+
+The same choices apply when you press Enter or Shift+Enter while dictation is active. Breezy remembers one or two distinct Enter presses for the next dictated phrase in the same window. Holding Enter counts once. Typing other text between two Enter presses is not tracked, so that uncommon sequence may still be treated as a paragraph.
 
 ## What you need
 
