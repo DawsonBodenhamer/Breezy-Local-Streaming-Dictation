@@ -2,7 +2,7 @@ param(
     [ValidateSet('run', 'start', 'stop', 'restart', 'status', 'disable', 'enable', 'pause-client', 'resume-client', 'install-task', 'remove-task', 'devices', 'tray-devices', 'set-microphone', 'switch-microphone', 'set-automatic-punctuation', 'set-formatting', 'hotkey-health')]
     [string]$Command = 'status',
     [int]$Device,
-    [string]$Hotkey,
+    [string]$HotkeyBinding,
     [ValidateSet('automatic_punctuation', 'capitalize_new_paragraphs', 'capitalize_new_lines')]
     [string]$FormattingKey,
     [ValidateSet('true', 'false')]
@@ -10,11 +10,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Runtime = Join-Path $env:LOCALAPPDATA 'breezy_local_streaming_dictation'
+$Runtime = Join-Path $env:LOCALAPPDATA 'breezy_dictation'
 $RuntimeEnvironment = Join-Path $Runtime 'runtime.env'
 if (Test-Path -LiteralPath $RuntimeEnvironment) {
     foreach ($Line in Get-Content -LiteralPath $RuntimeEnvironment -Encoding utf8) {
-        if ($Line -notmatch '^(HF_HOME|BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY|BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY)=(.*)$') {
+        if ($Line -notmatch '^(HF_HOME|BREEZY_DICTATION_AUTOHOTKEY|BREEZY_DICTATION_HOTKEY|BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY|BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY)=(.*)$') {
             continue
         }
         [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
@@ -24,23 +24,27 @@ $Venv = Join-Path $Runtime '.venv'
 $Python = Join-Path $Venv 'Scripts\python.exe'
 $Pythonw = Join-Path $Venv 'Scripts\pythonw.exe'
 $ManagerPythonw = $Pythonw
-$ClientExe = Join-Path $Venv 'Scripts\faster-whisper-dictation.exe'
+$ClientExe = Join-Path $Venv 'Scripts\breezy-dictation.exe'
 $ClientBootstrap = Join-Path $Runtime 'client_bootstrap.pyw'
 $MicrophoneLister = Join-Path $Runtime 'list_microphones.py'
 $ManagerScript = Join-Path $Runtime 'text_conversion_manager.py'
 $FormattingUpdater = Join-Path $Runtime 'formatting_config.py'
 $Config = Join-Path $Runtime 'config.toml'
+$env:BREEZY_DICTATION_CONFIG_FILE = $Config
 $env:BREEZY_LOCAL_DICTATION_CONFIG_FILE = $Config
-$AutoHotkey = if ($env:BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY) {
+$AutoHotkey = if ($env:BREEZY_DICTATION_AUTOHOTKEY) {
+    $env:BREEZY_DICTATION_AUTOHOTKEY
+} elseif ($env:BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY) {
     $env:BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY
 } else {
     Join-Path $env:ProgramFiles 'AutoHotkey\v2\AutoHotkey64.exe'
 }
 $HotkeyScript = Join-Path $Runtime 'win_h.ahk'
 $HotkeyCapture = Join-Path $Runtime 'hotkey_capture.ahk'
+$PhysicalContextSignal = Join-Path $Runtime 'physical_context_signal.ahk'
 $HotkeyApply = Join-Path $Runtime 'hotkey_apply.ps1'
 $HotkeyReadyFile = Join-Path $Runtime 'hotkey.ready'
-$HiddenLauncher = Join-Path $Runtime 'startup_hidden.vbs'
+$SupervisorScript = Join-Path $Runtime 'supervisor.ps1'
 $Logs = Join-Path $Runtime 'logs'
 $SupervisorLog = Join-Path $Logs 'supervisor.log'
 $ClientOut = Join-Path $Logs 'production_client.stdout.log'
@@ -53,8 +57,9 @@ $DisabledFile = Join-Path $Runtime 'disabled.flag'
 $PauseFile = Join-Path $Runtime 'client_paused.flag'
 $ClientFailedFile = Join-Path $Runtime 'client_failed.flag'
 $ClientReadyFile = Join-Path $Runtime 'client.ready'
+$env:BREEZY_DICTATION_READY_FILE = $ClientReadyFile
 $env:BREEZY_LOCAL_DICTATION_READY_FILE = $ClientReadyFile
-$TaskName = 'Breezy Local Streaming Dictation'
+$TaskName = 'Breezy Dictation'
 $TaskPath = '\'
 $ScriptPath = $MyInvocation.MyCommand.Path
 $DeviceSpecified = $PSBoundParameters.ContainsKey('Device')
@@ -66,7 +71,7 @@ function Write-SupervisorLog {
 }
 
 function Assert-Install {
-    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientExe, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $FormattingUpdater, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $HotkeyApply, $HiddenLauncher)) {
+    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientExe, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $FormattingUpdater, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $PhysicalContextSignal, $HotkeyApply, $SupervisorScript)) {
         if (-not (Test-Path -LiteralPath $Path)) {
             throw "Required path is missing: $Path"
         }
@@ -187,7 +192,7 @@ function Invoke-Run {
     }
 
     $CreatedNew = $false
-    $Mutex = [System.Threading.Mutex]::new($true, 'Local\BreezyLocalStreamingDictationSupervisor', [ref]$CreatedNew)
+    $Mutex = [System.Threading.Mutex]::new($true, 'Local\BreezyDictationSupervisor', [ref]$CreatedNew)
     if (-not $CreatedNew) {
         Write-SupervisorLog 'Duplicate supervisor invocation exited.'
         $Mutex.Dispose()
@@ -313,7 +318,8 @@ function Invoke-Run {
 function Register-StartupTask {
     Assert-Install
     $User = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $Action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$HiddenLauncher`""
+    $Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" run' -f $SupervisorScript
+    $Action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $Arguments
     $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
     $Principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
     $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
@@ -330,7 +336,18 @@ function Start-Supervisor {
         Write-Output "Already running (supervisor PID $Existing)."
         return
     }
-    Start-Process -FilePath 'wscript.exe' -ArgumentList @($HiddenLauncher) -WindowStyle Hidden | Out-Null
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        $SupervisorScript,
+        'run'
+    ) -WindowStyle Hidden | Out-Null
     for ($Attempt = 0; $Attempt -lt 30; $Attempt++) {
         Start-Sleep -Milliseconds 500
         $Existing = Get-LiveSupervisorPid
@@ -451,10 +468,10 @@ function Set-FormattingValue {
 }
 
 function Test-HotkeyHealth {
-    if ([string]::IsNullOrWhiteSpace($Hotkey)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($HotkeyBinding)) { return $false }
     if ($null -eq (Get-LiveSupervisorPid)) { return $false }
     if (-not (Test-Path -LiteralPath $HotkeyReadyFile -PathType Leaf)) { return $false }
-    if ((Get-Content -LiteralPath $HotkeyReadyFile -Raw -Encoding utf8).Trim() -ne $Hotkey) { return $false }
+    if ((Get-Content -LiteralPath $HotkeyReadyFile -Raw -Encoding utf8).Trim() -ne $HotkeyBinding) { return $false }
     $status = (& $ClientExe status 2>&1) -join "`n"
     return $status -match 'Status:\s+running\s+\(PID\s+\d+\)'
 }

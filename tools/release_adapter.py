@@ -22,10 +22,10 @@ ARCHIVE_ROOT_FILES = {
 ARCHIVE_DIRECTORIES = {"assets", "config", "docs", "licenses", "src", "windows"}
 REQUIRED_ARCHIVE_FILES = ARCHIVE_ROOT_FILES | {
     "config/config.example.toml", "config/runtime.example.env", "windows/supervisor.ps1", "windows/win_h.ahk",
-    "windows/hotkey_capture.ahk", "windows/hotkey_apply.ps1", "windows/client_bootstrap.pyw",
+    "windows/hotkey_capture.ahk", "windows/physical_context_signal.ahk", "windows/hotkey_apply.ps1", "windows/client_bootstrap.pyw",
     "windows/list_microphones.py", "windows/startup_hidden.vbs", "windows/text_conversion_manager.py",
     "windows/formatting_config.py",
-    "assets/breezy_local_streaming_dictation_icon_hd.png", "assets/local_dictation_start.wav",
+    "assets/breezy_dictation_icon_hd.png", "assets/local_dictation_start.wav",
     "assets/local_dictation_stop.wav", "assets/tray_menu.png", "licenses/faster-whisper-dictation-MIT.txt",
     "src/whisper_dictation/__init__.py", "src/whisper_dictation/engine/local.py",
     "src/whisper_dictation/hotkey/listener.py",
@@ -114,7 +114,7 @@ def validate(context: Any, ref: str | None = None) -> None:
 
 
 def artifact_name(version: str) -> str:
-    return f"Breezy-Local-Streaming-Dictation-v{version}.zip"
+    return f"Breezy-Dictation-v{version}.zip"
 
 
 def build_artifact(context: Any, ref: str, version: str, output: Path) -> tuple[dict[str, Any], ...]:

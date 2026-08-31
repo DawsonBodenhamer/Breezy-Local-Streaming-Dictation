@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.3] - Unreleased
 
 ### Added
+- **Breezy Dictation product identity**
+  - Renamed the current app, command, runtime folder, tray labels, and distributable archive to Breezy Dictation while keeping the existing GitHub repository address available for current releases.
+  - Upgrades move configuration, corrections, model content, logs, and rollback data from the previous runtime folder into the new authority and leave a recoverable migration marker.
 - **Optional automatic punctuation**
   - Added a tray choice that lets each user keep inferred sentence punctuation on or off while preserving punctuation they dictate explicitly and punctuation inside numbers, versions, and contractions.
 - **Spoken number formatting**
@@ -26,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Breezy now records more useful troubleshooting logging when it cannot hear you or type into the selected text box. These details never include your audio or dictated words.
 
 ### Fixed
+- **Startup migration**
+  - Preserved an existing automatic-at-logon choice when moving from the legacy runtime folder to the Breezy Dictation runtime, while restoring the previous startup task if the migration cannot complete.
+- **Reliable logon startup**
+  - Registers automatic startup directly against the Breezy supervisor, so a missing windowless-script wrapper cannot produce a Windows Script Host error or prevent startup.
+- **Deterministic phrase spacing**
+  - Leaves the caret immediately after dictated content without appending a completion space at the end of a document or before existing same-line or later-line text.
+  - Inserts exactly one separator between ordinary phrases and reliably resets IntelliJ Markdown spacing after physical keyboard or mouse input without treating injected dictation input as physical context.
+  - Restores Photoshop Text-tool and inline layer-name dictation; selected layer names consume their initial selection once, and pauses between streamed layer-name phrases produce one space.
+  - Keeps practical boundaries coherent: `new line second item` and `new paragraph next thought` preserve their multiline layout, `five thirty seven PM` becomes `5:37 PM`, `3,542,308` remains one number, and `caps lock this is temporary` produces `THIS IS TEMPORARY` until the mode expires.
 - **Streaming input boundaries**
   - Kept longer spoken number sequences from being partially rewritten as clock times.
   - Correctly distinguished “testing one twenty-three” as `testing 1:23`, “testing one hundred twenty-three” as `testing 123`, and “testing one two three” as unchanged spoken words when speech recognition initially collapses their numeric forms.

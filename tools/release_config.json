@@ -6,6 +6,6 @@
   "adapter_module": "release_adapter",
   "wrapper_command": "cmd.exe /d /c tools\\publish_release.cmd",
   "version_authority_description": "pyproject.toml [project].version and src/whisper_dictation/__init__.py __version__",
-  "artifact_names": ["Breezy-Local-Streaming-Dictation-v{version}.zip"],
+  "artifact_names": ["Breezy-Dictation-v{version}.zip"],
   "test_visibility": "repository"
 }

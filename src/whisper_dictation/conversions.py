@@ -67,8 +67,8 @@ def default_conversions_path() -> Path:
     """Return the per-user conversion file path."""
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        return Path(local_app_data) / "breezy_local_streaming_dictation" / "text_conversions.json"
-    return Path.home() / ".breezy_local_streaming_dictation" / "text_conversions.json"
+        return Path(local_app_data) / "breezy_dictation" / "text_conversions.json"
+    return Path.home() / ".breezy_dictation" / "text_conversions.json"
 
 
 def new_correction(

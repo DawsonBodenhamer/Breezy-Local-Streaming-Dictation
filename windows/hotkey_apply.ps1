@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Runtime = (Join-Path $env:LOCALAPPDATA 'breezy_local_streaming_dictation'),
+    [string]$Runtime = (Join-Path $env:LOCALAPPDATA 'breezy_dictation'),
     [Parameter(Mandatory)][string]$HotkeyBinding,
     [ValidateRange(1, 120)][int]$HealthTimeoutSeconds = 30
 )
@@ -35,8 +35,8 @@ function Set-RuntimeHotkey {
     } else {
         @()
     }
-    $updated = @($lines | Where-Object { $_ -notmatch '^BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY=' })
-    $updated += "BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY=$Binding"
+    $updated = @($lines | Where-Object { $_ -notmatch '^(BREEZY_DICTATION_HOTKEY|BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY)=' })
+    $updated += "BREEZY_DICTATION_HOTKEY=$Binding"
     $text = ($updated -join "`r`n") + "`r`n"
     Write-AtomicBytes -Path $RuntimeEnvironment -Bytes $Utf8NoBom.GetBytes($text)
 }
@@ -44,8 +44,13 @@ function Set-RuntimeHotkey {
 function Get-RuntimeHotkey {
     if (-not (Test-Path -LiteralPath $RuntimeEnvironment)) { return '#h' }
     $line = Get-Content -LiteralPath $RuntimeEnvironment -Encoding utf8 |
-        Where-Object { $_ -like 'BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY=*' } |
+        Where-Object { $_ -like 'BREEZY_DICTATION_HOTKEY=*' } |
         Select-Object -Last 1
+    if (-not $line) {
+        $line = Get-Content -LiteralPath $RuntimeEnvironment -Encoding utf8 |
+            Where-Object { $_ -like 'BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY=*' } |
+            Select-Object -Last 1
+    }
     if (-not $line) { return '#h' }
     return $line.Substring($line.IndexOf('=') + 1)
 }
@@ -98,7 +103,7 @@ if (-not (Test-Path -LiteralPath $Supervisor -PathType Leaf)) {
 }
 
 $createdNew = $false
-$mutex = [System.Threading.Mutex]::new($true, 'Local\BreezyLocalStreamingDictationHotkeyChange', [ref]$createdNew)
+$mutex = [System.Threading.Mutex]::new($true, 'Local\BreezyDictationHotkeyChange', [ref]$createdNew)
 if (-not $createdNew) {
     $mutex.Dispose()
     throw 'Another shortcut change is already in progress.'

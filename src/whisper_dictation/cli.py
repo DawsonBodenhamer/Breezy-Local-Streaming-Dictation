@@ -1,4 +1,4 @@
-"""CLI entry point for faster-whisper-dictation."""
+"""CLI entry point for Breezy Dictation."""
 
 from __future__ import annotations
 
@@ -327,7 +327,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 _DEFAULT_CONFIG_TEMPLATE = """\
-# faster-whisper-dictation configuration
+# Breezy Dictation configuration
 # See: https://github.com/bhargavchippada/faster-whisper-dictation
 
 [server]
@@ -536,8 +536,8 @@ def cmd_transcribe(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="faster-whisper-dictation",
-        description="Real-time speech-to-text dictation powered by faster-whisper",
+        prog="breezy-dictation",
+        description="Breezy Dictation: real-time speech-to-text powered by faster-whisper",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose logging")
     sub = parser.add_subparsers(dest="command")

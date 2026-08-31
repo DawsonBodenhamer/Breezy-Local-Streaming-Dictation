@@ -1,10 +1,14 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #Include hotkey_capture.ahk
+#Include physical_context_signal.ahk
+
+InstallKeybdHook()
+InstallMouseHook()
 
 ; Suppress Windows Voice Typing and relay one non-repeating toggle through the
 ; dictation client's synthetic-only Ctrl+Alt+Shift+F24 hotkey.
-Runtime := EnvGet("LOCALAPPDATA") "\breezy_local_streaming_dictation"
+Runtime := EnvGet("LOCALAPPDATA") "\breezy_dictation"
 SupervisorPath := Runtime "\supervisor.ps1"
 HotkeyApplyPath := Runtime "\hotkey_apply.ps1"
 HotkeyReadyPath := Runtime "\hotkey.ready"
@@ -20,13 +24,19 @@ CapitalizeNewParagraphsEnabled := ReadFormattingSetting(ConfigPath, "capitalize_
 CapitalizeNewLinesEnabled := ReadFormattingSetting(ConfigPath, "capitalize_new_lines", true)
 RecordingStatePath := Runtime "\recording.active"
 ManualLineBreakSignalPath := Runtime "\manual_line_break.signal"
+PhysicalContextResetSignalPath := Runtime "\physical_context_reset.signal"
+PhysicalContextGenerationPath := Runtime "\physical_context.generation"
+PhysicalContextSequence := 0
+LastPhysicalIdle := A_TimeIdlePhysical
 IdleIconPath := Runtime "\assets\dictation_idle.ico"
 RecordingIconPath := Runtime "\assets\dictation_recording.ico"
 LastRecordingState := -1
 MicrophoneMenu := Menu()
 CapitalizationMenu := Menu()
 CaptureSession := 0
-UserHotkey := EnvGet("BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY")
+UserHotkey := EnvGet("BREEZY_DICTATION_HOTKEY")
+if (UserHotkey = "")
+    UserHotkey := EnvGet("BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY")
 if (UserHotkey = "")
     UserHotkey := "#h"
 HotkeyLabel := FormatHotkeyLabel(UserHotkey)
@@ -53,19 +63,38 @@ A_TrayMenu.Add("Disable dictation & AutoHotkey (until restart)", DisableDictatio
 A_TrayMenu.Add("Enable dictation", EnableDictation)
 A_TrayMenu.Add("Restart dictation", RestartDictation)
 A_TrayMenu.Add("Open logs", OpenLogs)
-A_IconTip := "Breezy Local Streaming Dictation"
+A_IconTip := "Breezy Dictation"
 
 RefreshMicrophones()
 UpdateRecordingIcon()
 SetTimer(UpdateRecordingIcon, 150)
 
 Hotkey UserHotkey, HandleDictationHotkey
-#HotIf FileExist(RecordingStatePath)
 ~*Enter::RecordManualLineBreak()
-#HotIf
 PublishHotkeyReady()
 if FileExist(HotkeyPendingPath)
     SetTimer(CheckHotkeyChangeResult, 250)
+SetTimer(DetectPhysicalContextReset, 15)
+
+DetectPhysicalContextReset(*) {
+    global LastPhysicalIdle
+    currentIdle := A_TimeIdlePhysical
+    if currentIdle < LastPhysicalIdle || (currentIdle = 0 && LastPhysicalIdle != 0)
+        RecordPhysicalContextReset()
+    LastPhysicalIdle := currentIdle
+}
+
+RecordPhysicalContextReset() {
+    global PhysicalContextResetSignalPath, PhysicalContextGenerationPath
+    global PhysicalContextSequence
+    nextSequence := PhysicalContextSequence + 1
+    if WritePhysicalContextResetSignal(
+        PhysicalContextGenerationPath,
+        PhysicalContextResetSignalPath,
+        nextSequence
+    )
+        PhysicalContextSequence := nextSequence
+}
 
 HandleDictationHotkey(*) {
     global UserHotkey
@@ -80,11 +109,11 @@ HandleDictationHotkey(*) {
 ToggleDictation(*) {
     global ClientReadyPath, ClientFailedPath
     if FileExist(ClientFailedPath) {
-        TrayTip("Dictation client failed to start. Open logs or restart dictation.", "Breezy Local Streaming Dictation")
+        TrayTip("Dictation client failed to start. Open logs or restart dictation.", "Breezy Dictation")
         return
     }
     if !FileExist(ClientReadyPath) {
-        TrayTip("Dictation is still loading.", "Breezy Local Streaming Dictation")
+        TrayTip("Dictation is still loading.", "Breezy Dictation")
         return
     }
     SendEvent "^!+{F24}"
@@ -92,8 +121,9 @@ ToggleDictation(*) {
 
 RecordManualLineBreak(*) {
     global RecordingStatePath, ManualLineBreakSignalPath
-    if !FileExist(RecordingStatePath)
+    if !FileExist(RecordingStatePath) {
         return
+    }
     if GetKeyState("Ctrl", "P") || GetKeyState("Alt", "P")
         || GetKeyState("LWin", "P") || GetKeyState("RWin", "P")
         return
@@ -356,7 +386,7 @@ CheckHotkeyChangeResult() {
     try FileDelete(HotkeyResultPath)
     try FileDelete(HotkeyPendingPath)
     if InStr(result, '"status":"success"') {
-        TrayTip("Activation shortcut changed to " FormatHotkeyLabel(UserHotkey) ".", "Breezy Local Streaming Dictation")
+        TrayTip("Activation shortcut changed to " FormatHotkeyLabel(UserHotkey) ".", "Breezy Dictation")
     } else if InStr(result, '"status":"rolled_back"') {
         MsgBox("The shortcut was not changed. " FormatHotkeyLabel(UserHotkey) " is still active.", "Shortcut restored", "Icon!")
     } else {
@@ -406,7 +436,7 @@ ToggleAutomaticPunctuation(*) {
     global AutomaticPunctuationEnabled
     nextValue := !AutomaticPunctuationEnabled
     if !SetFormattingValue("automatic_punctuation", nextValue) {
-        TrayTip("Automatic punctuation could not be changed.", "Breezy Local Streaming Dictation")
+        TrayTip("Automatic punctuation could not be changed.", "Breezy Dictation")
         return
     }
     AutomaticPunctuationEnabled := nextValue
@@ -414,14 +444,14 @@ ToggleAutomaticPunctuation(*) {
         A_TrayMenu.Check("Automatic punctuation")
     else
         A_TrayMenu.Uncheck("Automatic punctuation")
-    TrayTip("Automatic punctuation " (nextValue ? "enabled" : "disabled") ". Applies the next time you start recording.", "Breezy Local Streaming Dictation")
+    TrayTip("Automatic punctuation " (nextValue ? "enabled" : "disabled") ". Applies the next time you start recording.", "Breezy Dictation")
 }
 
 ToggleCapitalizeNewParagraphs(*) {
     global CapitalizeNewParagraphsEnabled, CapitalizationMenu
     nextValue := !CapitalizeNewParagraphsEnabled
     if !SetFormattingValue("capitalize_new_paragraphs", nextValue) {
-        TrayTip("Paragraph capitalization could not be changed.", "Breezy Local Streaming Dictation")
+        TrayTip("Paragraph capitalization could not be changed.", "Breezy Dictation")
         return
     }
     CapitalizeNewParagraphsEnabled := nextValue
@@ -433,7 +463,7 @@ ToggleCapitalizeNewParagraphs(*) {
         nextValue
             ? "New paragraphs and empty documents will begin with a capital letter. Applies to the next utterance."
             : "New paragraphs and empty documents will keep the recognized capitalization. Applies to the next utterance.",
-        "Breezy Local Streaming Dictation"
+        "Breezy Dictation"
     )
 }
 
@@ -441,7 +471,7 @@ ToggleCapitalizeNewLines(*) {
     global CapitalizeNewLinesEnabled, CapitalizationMenu
     nextValue := !CapitalizeNewLinesEnabled
     if !SetFormattingValue("capitalize_new_lines", nextValue) {
-        TrayTip("Line capitalization could not be changed.", "Breezy Local Streaming Dictation")
+        TrayTip("Line capitalization could not be changed.", "Breezy Dictation")
         return
     }
     CapitalizeNewLinesEnabled := nextValue
@@ -453,34 +483,34 @@ ToggleCapitalizeNewLines(*) {
         nextValue
             ? "Text after one line break will begin with a capital letter. Applies to the next utterance."
             : "Text after one line break will keep the recognized capitalization. Applies to the next utterance.",
-        "Breezy Local Streaming Dictation"
+        "Breezy Dictation"
     )
 }
 
 SelectMicrophone(deviceIndex, deviceName, *) {
     global SupervisorPath, Runtime
-    TrayTip("Switching to " deviceName ". Dictation will restart.", "Breezy Local Streaming Dictation")
+    TrayTip("Switching to " deviceName ". Dictation will restart.", "Breezy Dictation")
     command := "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"" SupervisorPath "`" switch-microphone -Device " deviceIndex
     Run(command, Runtime, "Hide")
 }
 
 DisableDictation(*) {
     global SupervisorPath, Runtime
-    TrayTip("Stopping dictation and releasing AutoHotkey. Will return on next restart.", "Breezy Local Streaming Dictation")
+    TrayTip("Stopping dictation and releasing AutoHotkey. Will return on next restart.", "Breezy Dictation")
     command := "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"" SupervisorPath "`" stop"
     Run(command, Runtime, "Hide")
 }
 
 EnableDictation(*) {
     global SupervisorPath, Runtime
-    TrayTip("Starting dictation.", "Breezy Local Streaming Dictation")
+    TrayTip("Starting dictation.", "Breezy Dictation")
     command := "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"" SupervisorPath "`" resume-client"
     Run(command, Runtime, "Hide")
 }
 
 RestartDictation(*) {
     global SupervisorPath, Runtime
-    TrayTip("Restarting dictation.", "Breezy Local Streaming Dictation")
+    TrayTip("Restarting dictation.", "Breezy Dictation")
     command := "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"" SupervisorPath "`" restart"
     Run(command, Runtime, "Hide")
 }

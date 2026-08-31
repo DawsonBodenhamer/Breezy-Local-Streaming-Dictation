@@ -94,8 +94,37 @@ function Invoke-Checked {
     $script:Summary.Add($Description)
 }
 
+function Resolve-RuntimeAuthority {
+    param(
+        [Parameter(Mandatory)][string]$NewRuntime,
+        [Parameter(Mandatory)][string]$LegacyRuntime
+    )
+    if (Test-Path -LiteralPath $NewRuntime -PathType Container) {
+        return $NewRuntime
+    }
+    if (Test-Path -LiteralPath $LegacyRuntime -PathType Container) {
+        $tombstonePath = Join-Path $LegacyRuntime 'migration.tombstone.json'
+        if (Test-Path -LiteralPath $tombstonePath -PathType Leaf) {
+            try {
+                $tombstone = Get-Content -LiteralPath $tombstonePath -Raw -Encoding utf8 | ConvertFrom-Json
+                if ([System.IO.Path]::GetFullPath([string]$tombstone.target) -eq [System.IO.Path]::GetFullPath($NewRuntime)) {
+                    throw "Legacy runtime is migrated, but the new authority is missing: $NewRuntime"
+                }
+            } catch [System.Management.Automation.RuntimeException] {
+                throw
+            } catch {
+                throw "Cannot read the legacy runtime migration tombstone: $tombstonePath"
+            }
+        }
+        return $LegacyRuntime
+    }
+    return $NewRuntime
+}
+
 function Invoke-Uninstall {
-    $runtime = Join-Path $env:LOCALAPPDATA 'breezy_local_streaming_dictation'
+    $newRuntime = Join-Path $env:LOCALAPPDATA 'breezy_dictation'
+    $legacyRuntime = Join-Path $env:LOCALAPPDATA 'breezy_local_streaming_dictation'
+    $runtime = Resolve-RuntimeAuthority -NewRuntime $newRuntime -LegacyRuntime $legacyRuntime
     $conversions = Join-Path $runtime 'text_conversions.json'
     if (-not (Confirm-WizardAction "Stop dictation and remove wizard-owned files from ${runtime}? Conversion rules will be preserved.")) { return }
     if (-not $DryRun -and (Test-Path -LiteralPath (Join-Path $runtime 'supervisor.ps1'))) {
@@ -106,8 +135,10 @@ function Invoke-Uninstall {
     $ownedFiles = @(
         'client_bootstrap.pyw', 'config.toml', 'hotkey_apply.ps1', 'hotkey_capture.ahk',
         'hotkey.ready', 'hotkey_change.pending', 'hotkey_change.result.json',
+        'manual_line_break.signal', 'physical_context_reset.signal',
+        'physical_context.generation', 'client.ready', 'client_failed.flag',
         'formatting_config.py', 'list_microphones.py', 'runtime.env', 'startup_hidden.vbs', 'supervisor.ps1',
-        'text_conversion_manager.py', 'win_h.ahk'
+        'physical_context_signal.ahk', 'text_conversion_manager.py', 'win_h.ahk'
     )
     $ownedDirectories = @('.venv', 'assets', 'logs', 'manifests', 'models')
     if (-not $DryRun) {
@@ -130,13 +161,23 @@ function Invoke-Uninstall {
     if (-not $DryRun -and (Test-Path -LiteralPath $runtime) -and -not (Get-ChildItem -LiteralPath $runtime -Force | Select-Object -First 1)) {
         Remove-Item -LiteralPath $runtime -Force
     }
+    if (-not $DryRun -and $runtime -eq $newRuntime -and (Test-Path -LiteralPath $legacyRuntime -PathType Container)) {
+        $legacyTombstone = Join-Path $legacyRuntime 'migration.tombstone.json'
+        if (Test-Path -LiteralPath $legacyTombstone -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyRuntime -Recurse -Force
+        }
+    }
+    if (-not $DryRun) {
+        Unregister-ScheduledTask -TaskName 'Breezy Local Streaming Dictation' -TaskPath '\' -Confirm:$false -ErrorAction SilentlyContinue
+    }
     Write-Host 'Uninstall complete. Conversion rules were preserved unless separately deleted.' -ForegroundColor Green
 }
 
 if ($Uninstall) { Invoke-Uninstall; return }
 
 $sourceRoot = $PSScriptRoot
-$runtimeDefault = Join-Path $env:LOCALAPPDATA 'breezy_local_streaming_dictation'
+$runtimeDefault = Join-Path $env:LOCALAPPDATA 'breezy_dictation'
+$legacyRuntimeDefault = Join-Path $env:LOCALAPPDATA 'breezy_local_streaming_dictation'
 $conversionPath = Join-Path $runtimeDefault 'text_conversions.json'
 $conversionBefore = Get-ConversionFingerprint -Path $conversionPath
 
@@ -177,6 +218,11 @@ Write-Host "Resolved inference: device = `"$resolvedCompute`", compute_type = `"
 Start-WizardStage 'Choose installation folder'
 $runtimeInput = Read-WizardValue "Installation folder [$runtimeDefault]"
 $runtime = if ([string]::IsNullOrWhiteSpace($runtimeInput)) { $runtimeDefault } else { [System.IO.Path]::GetFullPath($runtimeInput) }
+if ([System.IO.Path]::GetFullPath($runtime) -eq [System.IO.Path]::GetFullPath($runtimeDefault) -and (Test-Path -LiteralPath $legacyRuntimeDefault -PathType Container)) {
+    Invoke-Checked 'Migrate the legacy Breezy Local Streaming Dictation runtime' {
+        & (Join-Path $sourceRoot 'windows\migrate_runtime.ps1') -OldRuntime $legacyRuntimeDefault -NewRuntime $runtime
+    }
+}
 $conversionPath = Join-Path $runtime 'text_conversions.json'
 $conversionBefore = Get-ConversionFingerprint -Path $conversionPath
 $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($runtime))
@@ -213,7 +259,7 @@ Invoke-Checked 'Install pinned Python dependencies' { & $runtimePython -m pip in
 if ($resolvedCompute -eq 'cuda') {
     Invoke-Checked 'Install pinned NVIDIA CUDA dependencies' { & $runtimePython -m pip install --require-hashes -r (Join-Path $sourceRoot 'requirements.cuda.lock') }
 }
-Invoke-Checked 'Install Breezy Local Streaming Dictation' { & $runtimePython -m pip install --no-build-isolation --no-deps --force-reinstall $sourceRoot }
+Invoke-Checked 'Install Breezy Dictation' { & $runtimePython -m pip install --no-build-isolation --no-deps --force-reinstall $sourceRoot }
 Assert-ConversionsUnchanged -Before $conversionBefore -Path $conversionPath
 
 Start-WizardStage 'Choose model and microphone'
@@ -253,8 +299,8 @@ $config = $config -replace 'compute_type = "float16"', $engineComputeTypeLine
 $config = $config -replace 'device = "cuda"', $engineDeviceLine
 if ($DryRun) { Write-Host "Would write $runtime\config.toml" } else { $config | Set-Content -LiteralPath (Join-Path $runtime 'config.toml') -Encoding utf8 }
 Set-WizardEnvValue -Path (Join-Path $runtime 'runtime.env') -Name 'HF_HOME' -Value $modelStorage
-Set-WizardEnvValue -Path (Join-Path $runtime 'runtime.env') -Name 'BREEZY_LOCAL_STREAMING_DICTATION_AUTOHOTKEY' -Value $autoHotkey
-Set-WizardDefaultEnvValue -Path (Join-Path $runtime 'runtime.env') -Name 'BREEZY_LOCAL_STREAMING_DICTATION_HOTKEY' -Value '#h'
+Set-WizardEnvValue -Path (Join-Path $runtime 'runtime.env') -Name 'BREEZY_DICTATION_AUTOHOTKEY' -Value $autoHotkey
+Set-WizardDefaultEnvValue -Path (Join-Path $runtime 'runtime.env') -Name 'BREEZY_DICTATION_HOTKEY' -Value '#h'
 $script:Summary.Add('Generated machine-local configuration')
 Assert-ConversionsUnchanged -Before $conversionBefore -Path $conversionPath
 
@@ -273,7 +319,7 @@ Assert-ConversionsUnchanged -Before $conversionBefore -Path $conversionPath
 
 Start-WizardStage 'Health check and optional startup'
 if (-not $DryRun) { & (Join-Path $runtime 'supervisor.ps1') status }
-if (Confirm-WizardAction 'Register Breezy Local Streaming Dictation to start at logon? This changes Windows Task Scheduler.' ) {
+if (Confirm-WizardAction 'Register Breezy Dictation to start at logon? This changes Windows Task Scheduler.' ) {
     Invoke-Checked 'Register startup task' { & (Join-Path $runtime 'supervisor.ps1') install-task }
 }
 if (Confirm-WizardAction 'Start dictation now? The selected model may download from the internet on first use.' ) {

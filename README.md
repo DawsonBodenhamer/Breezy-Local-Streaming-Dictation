@@ -1,201 +1,118 @@
-<h1 align="center">Breezy Local Streaming Dictation</h1>
+<h1 align="center">Breezy Dictation</h1>
 
-<p align="center"><strong>Streaming voice typing that puts accurate, punctuated text on screen while you speak.</strong></p>
+<p align="center"><strong>Streaming dictation that puts accurate, punctuated text on screen while you speak.</strong></p>
 
 <p align="center">
-  <a href="#what-you-need"><img src="https://img.shields.io/badge/Windows-11-3776AB?style=for-the-badge&logo=windows11&logoColor=white" alt="Windows 11"></a>
-  <a href="#privacy"><img src="https://img.shields.io/badge/Processing-Local-2E7D32?style=for-the-badge" alt="Local Processing"></a>
-  <a href="#what-you-need"><img src="https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12"></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/Windows-11-3776AB?style=for-the-badge&logo=windows11&logoColor=white" alt="Windows 11"></a>
+  <a href="#privacy-and-troubleshooting"><img src="https://img.shields.io/badge/Processing-Local-2E7D32?style=for-the-badge" alt="Local Processing"></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-C9A227?style=for-the-badge" alt="MIT License"></a>
 </p>
 
 ---
 
-<img src="assets/breezy_local_streaming_dictation_icon_hd.png" align="left" width="50%" alt="Gold microphone with streaming voice waves">
+<img src="assets/breezy_dictation_icon_hd.png" align="left" width="50%" alt="Gold microphone with streaming voice waves">
 
-## Why I made it
+## Purpose
 
-The dictation tools I found either came with another subscription or made me record first and wait for the result. I wanted words to appear while I spoke, with reliable recognition and punctuation I could control, without giving up speed. Breezy also processes microphone audio locally and learns recurring names and terminology through accessible corrections.
+Breezy Dictation turns speech into editable text continuously. Focus a supported text field, press the activation hotkey, speak, and press the hotkey again when finished. Recognition runs locally, while corrections let you teach Breezy names and terminology that matter to you.
 
-<br clear="left">
+## Installation
 
-<table>
-  <tr>
-    <td width="50%">
-      <strong>⚡ Live text</strong><br>
-      See words appear as you speak instead of waiting for a recording to finish.
-    </td>
-    <td width="50%">
-      <strong>⌨️ Type and talk</strong><br>
-      Keep using the keyboard while dictated text arrives in the same field.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <strong>🔒 Private by default</strong><br>
-      Process microphone audio locally instead of sending recordings to a service.
-    </td>
-    <td width="50%">
-      <strong>✍️ Your vocabulary</strong><br>
-      Correct names, terminology, and recurring phrases with personal rules.
-    </td>
-  </tr>
-</table>
+Download the latest release from the [GitHub Releases page](https://github.com/DawsonBodenhamer/Breezy-Local-Streaming-Dictation/releases), then download the `Breezy-Dictation-v<version>.zip` asset and extract it to a local folder.
 
-## Performance
+Preview setup first:
 
-WhisperLiveKit's default `large-v3-turbo` model is the reason this feels both quick and accurate: it offers excellent transcription quality without the slower pace of the full large model. NVIDIA CUDA is optional acceleration; systems without a compatible NVIDIA GPU can run the same transcription model through the supported CPU INT8 fallback. CPU inference is usually slower, so setup also accepts smaller English models when responsiveness or available memory matters more than maximum accuracy.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -DryRun
+```
 
-| Model and approximate VRAM | What to expect |
+Install when ready:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+Setup selects the install folder, model storage, compute mode, microphone, and optional logon startup. New installs use `%LOCALAPPDATA%\breezy_dictation`. Existing installations are migrated from `%LOCALAPPDATA%\breezy_local_streaming_dictation` with configuration, corrections, model content, logs, and rollback data preserved. The old folder becomes a versioned migration tombstone after verification.
+
+The default activation hotkey is `Win+H`. Change it from the tray. Automatic punctuation is off for new installations; spoken punctuation remains available.
+
+## Using Breezy
+
+1. Choose a microphone from the tray.
+2. Focus an editable text field.
+3. Press the selected activation hotkey and speak naturally.
+4. Press the hotkey again to finish.
+
+Breezy inserts only dictated content. It never appends a completion space or moves the caret past an automatic separator. Consecutive phrases receive exactly one separator when needed. Physical keyboard or mouse input resets the conservative fallback context used by editors that do not expose caret text; Breezy's own injected Unicode input cannot create that reset. When you rename a Photoshop layer, a pause between dictated phrases produces one space without adding a leading space to the selected name.
+
+### Voice-command examples
+
+| Say | Result |
 |---|---|
-| **`large-v3-turbo`** — default, 6 GB | Excellent quality with fast transcription |
-| **`medium.en`** — 5 GB | High English accuracy with slower transcription |
-| **`small.en`** — 2 GB | A strong balance for limited hardware |
-| **`base.en`** — 1 GB | Faster and lighter, with a larger accuracy tradeoff |
+| `hello comma world` | `Hello, world` |
+| `new line second item` | A new line followed by `Second item` when line capitalization is enabled |
+| `new paragraph next thought` | A blank line followed by `Next thought` when paragraph capitalization is enabled |
+| `five thirty seven PM` | `5:37 PM` |
+| `three million five hundred forty two thousand three hundred eight` | `3,542,308` |
+| `caps lock this is temporary` | `THIS IS TEMPORARY`; the mode expires after two seconds of silence |
+| `open quote local first close quote` | `“local first”` |
+| `open parenthesis ready close parenthesis` | `(ready)` |
 
-Memory figures are approximate and real usage varies by hardware. See the [WhisperLiveKit model guide](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/docs/default_and_custom_models.md) for the upstream model comparisons. The VRAM figures apply to GPU acceleration; CPU mode uses system memory instead.
+`comma`, `period`, `question mark`, `exclamation mark`, `semicolon`, `colon`, `open quote`, `close quote`, `em dash`, `hyphen`, `slash`, `underscore`, `backtick`, `new line`, and `new paragraph` are spoken punctuation and layout commands. Automatic punctuation controls inferred marks only.
 
-## Start in five steps
+### Corrections
 
-> [!TIP]
-> Download the latest release, then preview setup. A dry run makes no changes to your computer.
+Open **Dictation corrections…** from the tray to map one or more phrases Breezy may hear to the exact text it should type. Choose whether matching is case-sensitive and whether phrases must appear as complete words. Existing correction files remain active during an upgrade and are written to the new runtime after migration.
 
-1. Open the project's GitHub **Releases** page and select the latest release.
-2. Download the `Breezy-Local-Streaming-Dictation-v<version>.zip` asset and extract it to a local folder.
-3. Open PowerShell in that folder.
-4. Preview the setup:
+### Capitalization and tray controls
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\setup.ps1 -DryRun
-   ```
+The **Capitalization** submenu independently controls the first word after a blank-line paragraph and after one line break. `all caps on`, `all caps off`, `caps on`, `caps off`, and `cap` remain available. `caps lock` toggles temporary all caps inline; repeating it within two seconds turns it off.
 
-5. Install when you are ready:
+The tray also controls microphone selection, automatic punctuation, activation hotkey, restart, local logs, and session-only disablement of dictation and AutoHotkey.
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\setup.ps1
-   ```
-
-Setup guides you through the install location, model storage, compute mode, microphone, and startup preference. **Automatic** uses NVIDIA CUDA when it is available and falls back to CPU INT8 otherwise; you can also select either mode explicitly. The activation hotkey starts as `Win+H` and can be changed from the tray. Automatic punctuation starts off on a fresh installation. Running setup again keeps your dictation corrections and punctuation choice intact.
-
-## Your first sentence
-
-Choose a microphone from the tray, focus an editable text field, and press your selected activation hotkey (`Win+H` by default). Speak naturally, then press it again to finish. The tray icon changes while you are speaking.
-
-## Everyday controls
-
-<table>
-  <thead>
-    <tr>
-      <th>From the tray</th>
-      <th>What it does</th>
-      <th>Tray menu</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><strong>Microphone</strong></td>
-      <td>Switch the active input.</td>
-      <td rowspan="8" valign="top"><img src="assets/tray_menu.png" width="100%" alt="Breezy Local Streaming Dictation tray menu with hotkey and correction controls"></td>
-    </tr>
-    <tr>
-      <td><strong>Automatic punctuation</strong></td>
-      <td>Let Breezy infer commas and question marks. Leave it off when you prefer to dictate punctuation yourself.</td>
-    </tr>
-    <tr>
-      <td><strong>Capitalization</strong></td>
-      <td>Choose independently whether text after a new paragraph or one new line begins with a capital letter.</td>
-    </tr>
-    <tr>
-      <td><strong>Dictation corrections…</strong></td>
-      <td>Map one or more phrases Breezy may hear to the exact text it should type.</td>
-    </tr>
-    <tr>
-      <td><strong>Change activation hotkey…</strong></td>
-      <td>Record a new modifier-plus-key shortcut without typing its name.</td>
-    </tr>
-    <tr>
-      <td><strong>Restart dictation</strong></td>
-      <td>Start a fresh dictation session.</td>
-    </tr>
-    <tr>
-      <td><strong>Open logs</strong></td>
-      <td>Open local troubleshooting information.</td>
-    </tr>
-    <tr>
-      <td><strong>Disable dictation &amp; AutoHotkey</strong></td>
-      <td>Turn dictation off until the next logon.</td>
-    </tr>
-  </tbody>
-</table>
-
-### Dictation corrections
-
-One correction contains one or more phrases Breezy may hear and the exact text Breezy should type. You can choose whether capitalization matters and whether each phrase must appear as complete words. Changes take effect without restarting dictation. Existing one-phrase correction files remain active and are upgraded only after you explicitly save or organize them.
-
-### Punctuation you can say
-
-You can dictate sentence punctuation with `comma`, `period`, `question mark`, `exclamation mark`, `semicolon`, and `colon`. Breezy also understands `open quote`, `close quote`, parentheses, brackets, `em dash`, `hyphen`, `slash`, `underscore`, `backtick`, `new line`, and `new paragraph`.
-
-The tray's **Automatic punctuation** choice controls punctuation Breezy infers rather than punctuation you say. It is off on fresh installations. When it is off, spoken punctuation commands, contractions, software versions such as `1.20.3`, and clock times such as `5:37 PM` remain intact.
-
-### Temporary all caps
-
-Say `caps lock` to turn temporary all caps on wherever the command appears in an utterance; words after it are capitalized while words before it are preserved. Say `caps lock` again within two seconds to turn it off, or let two seconds of silence pass and it expires automatically before your next phrase. For example, `now I'm testing caps lock is this capitalized` types `now I'm testing IS THIS CAPITALIZED`. The ordinary phrase `caps lock key` remains text. The existing `all caps on` and `all caps off` commands remain available.
-
-### Capitalization after line breaks
-
-The tray's **Capitalization** submenu has two independent choices:
-
-- **Capitalize new paragraphs** applies after a blank line and at the beginning of an empty document. For example, saying `new paragraph hello` types a blank line followed by `Hello` when this choice is on.
-- **Capitalize new lines** applies after one line break. For example, saying `new line hello` types the next line as `Hello` when this choice is on.
-
-A blank-line paragraph always uses the paragraph choice, not the line choice. Turning a choice off keeps the capitalization Breezy recognized instead of forcing the first ordinary word to uppercase. These choices do not capitalize every sentence after a period; sentence-internal capitalization remains separate.
-
-The same choices apply when you press Enter or Shift+Enter while dictation is active. Breezy remembers one or two distinct Enter presses for the next dictated phrase in the same window. Holding Enter counts once. Typing other text between two Enter presses is not tracked, so that uncommon sequence may still be treated as a paragraph.
-
-## What you need
+## Performance and requirements
 
 | Requirement | Supported setup |
 |---|---|
 | Operating system | 64-bit Windows 11 |
-| Compute | Automatic, NVIDIA CUDA, or CPU INT8 |
-| NVIDIA acceleration | Optional; requires a compatible NVIDIA GPU with current drivers |
-| CPU fallback | Supported on compatible x86-64 systems with AMD, Intel, or no dedicated GPU |
-| Recommended VRAM | 8 GB or more for the default model when using NVIDIA CUDA |
 | Runtime | Python 3.12 with Tcl/Tk |
-| Hotkey | AutoHotkey v2 |
+| Hotkey relay | AutoHotkey v2 |
+| Compute | Automatic, NVIDIA CUDA, or CPU INT8 |
 | Hardware | Working microphone and enough space for the chosen model |
 
-## AMD or Intel GPU?
+`large-v3-turbo` is the default model. Approximate GPU memory needs:
 
-Breezy supports machines with AMD or Intel graphics through CPU INT8; it does not currently accelerate transcription on those GPUs. Advanced users can use the upstream [whisper.cpp Vulkan instructions](https://github.com/ggml-org/whisper.cpp#vulkan-gpu-support) as a theoretical cross-vendor starting point. This route is unsupported and unvalidated here: it would require you to replace Breezy's transcription backend and model integration, not select another built-in compute option.
+| Model | Approximate VRAM | Tradeoff |
+|---|---:|---|
+| `large-v3-turbo` | 6 GB | Best default balance of quality and speed |
+| `medium.en` | 5 GB | High English accuracy, slower |
+| `small.en` | 2 GB | Lighter and faster, lower accuracy |
+| `base.en` | 1 GB | Fastest, largest accuracy tradeoff |
 
-## Privacy
+NVIDIA CUDA is optional. AMD, Intel, and systems without a dedicated GPU use the supported CPU INT8 path; Breezy does not currently provide built-in AMD or Intel GPU acceleration.
 
-Your microphone audio is processed on your computer. Dictated text and personal conversion rules stay local. Logs are stored in `%LOCALAPPDATA%\breezy_local_streaming_dictation\logs`.
+## Privacy and troubleshooting
 
-<details>
-<summary><strong>Common fixes</strong></summary>
+Microphone audio is processed on your computer. Dictated text and correction rules stay local. Troubleshooting logs are stored in `%LOCALAPPDATA%\breezy_dictation\logs`; they do not contain audio or dictated words.
 
-| Symptom | Try this |
+| Symptom | Action |
 |---|---|
-| No tray icon | Rerun setup and choose **Start dictation now** at the final step. |
+| No tray icon | Rerun setup and choose **Start dictation now**. |
 | Wrong microphone | Select **Refresh microphone list**, then choose the input again. |
 | No text appears | Confirm the destination is editable and focused, then inspect the local logs. |
 | CUDA or model error | Update the NVIDIA driver, or rerun setup and choose **CPU**. |
 | CPU transcription is too slow | Rerun setup with a smaller English model. |
-| Hotkey does nothing | Confirm AutoHotkey v2 is installed, then restart dictation. |
+| Hotkey does nothing | Confirm AutoHotkey v2 is installed, then restart Breezy Dictation. |
 
-</details>
-
-## Uninstall safely
+## Uninstall
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Uninstall
 ```
 
-Normal uninstall keeps `text_conversions.json`. Deleting those rules requires the separate `-DeleteConversions` option and a confirmation that names the file.
+Uninstall removes wizard-owned runtime files and startup registration while preserving `text_conversions.json`. The migration tombstone is removed with the new runtime. Delete correction rules only with the separate `-DeleteConversions` option and its exact confirmation.
 
 ## Credits
 
-Released under the [MIT License](LICENSE). This project includes modified source from `faster-whisper-dictation`; see [Third-party notices](THIRD_PARTY_NOTICES.md).
+Released under the [MIT License](LICENSE). This project includes modified source from [`faster-whisper-dictation`](THIRD_PARTY_NOTICES.md); see the third-party notices for attribution and license text.

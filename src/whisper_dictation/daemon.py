@@ -10,14 +10,20 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .audio import AudioStream
-from .caret_context import CaretContext, classify_casing_context, get_caret_context
+from .caret_context import (
+    CaretContext,
+    FocusedControlDiagnostic,
+    classify_casing_context,
+    get_caret_context,
+    is_allowlisted_unavailable_context_target,
+)
 from .config import CONFIG_DIR, Config, load_config
 from .conversions import ConversionStore
 from .engine import TranscriptionEngine, create_engine, create_ws_engine
@@ -43,6 +49,28 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_MAX_TICK_COUNT_MS = 2**64 - 1
+
+
+def _target_identity(target: FocusedControlDiagnostic | None) -> tuple[str, str] | None:
+    if not isinstance(target, FocusedControlDiagnostic):
+        return None
+    executable = target.foreground_executable.strip().casefold()
+    window_class = target.foreground_window_class.strip().casefold()
+    if not executable or not window_class:
+        return None
+    return executable, window_class
+
+
+def _default_runtime_path(filename: str) -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    runtime_dir = (
+        Path(local_app_data) / "breezy_dictation"
+        if local_app_data
+        else CONFIG_DIR
+    )
+    return runtime_dir / filename
+
 
 class ManualLineBreakSignal:
     """Consume a content-free, originating-window-bound manual newline marker."""
@@ -51,13 +79,7 @@ class ManualLineBreakSignal:
         if path is not None:
             self.path = path
             return
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        runtime_dir = (
-            Path(local_app_data) / "breezy_local_streaming_dictation"
-            if local_app_data
-            else CONFIG_DIR
-        )
-        self.path = runtime_dir / "manual_line_break.signal"
+        self.path = _default_runtime_path("manual_line_break.signal")
 
     def clear(self) -> None:
         try:
@@ -90,6 +112,68 @@ class ManualLineBreakSignal:
         ):
             return 0
         return int(count_text)
+
+
+class PhysicalContextResetSignal:
+    """Consume one content-free physical-context reset event."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or _default_runtime_path("physical_context_reset.signal")
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            log.debug("Physical-context reset cleanup failed", exc_info=True)
+
+    def consume(self, *, generation: str, last_sequence: int) -> int | None:
+        """Return a new sequence, rejecting stale or malformed reset evidence."""
+        try:
+            value = self.path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            self.clear()
+            return None
+        finally:
+            self.clear()
+
+        fields = value.split("|")
+        if len(fields) != 2:
+            return None
+        recorded_generation, sequence_text = fields
+        if (
+            not recorded_generation
+            or "|" in recorded_generation
+            or not sequence_text.isdecimal()
+        ):
+            return None
+        try:
+            sequence = int(sequence_text)
+        except ValueError:
+            return None
+        if (
+            recorded_generation != generation
+            or not 0 < sequence <= _MAX_TICK_COUNT_MS
+            or sequence <= last_sequence
+        ):
+            return None
+        return sequence
+
+
+@dataclass
+class TargetInjectionSession:
+    """Committed fallback state bound to one foreground window session."""
+
+    window_key: tuple[str, str, int]
+    last_char: str = ""
+    has_output: bool = False
+    photoshop_control_key: tuple[
+        str, str, str, int, str, str, int, tuple[str, ...]
+    ] | None = None
+    photoshop_selection_consumed: bool = False
+
+
+def _new_physical_context_generation() -> str:
+    return f"{os.getpid()}-{time.monotonic_ns()}"
 
 
 def get_foreground_window_handle() -> int:
@@ -212,11 +296,15 @@ def _log_focus_rejection(context: CaretContext, boundary: str) -> None:
     target = context.target
     log.info(
         "Focus rejection: boundary=%s executable=%s window_class=%s "
-        "control_type=%s text_pattern=%s value_pattern=%s error=%s",
+        "control_type=%s class_name=%s automation_id=%s ancestors=%s "
+        "text_pattern=%s value_pattern=%s error=%s",
         boundary,
         target.foreground_executable if target else "",
         target.foreground_window_class if target else "",
         target.control_type if target else "",
+        target.class_name if target else "",
+        target.automation_id if target else "",
+        ">".join(target.ancestor_classes) if target else "",
         target.text_pattern if target else False,
         target.value_pattern if target else False,
         target.error if target else "no_diagnostic",
@@ -385,7 +473,7 @@ def _play_toggle_tone(active: bool) -> None:
         )
         sound_path = (
             Path(os.environ["LOCALAPPDATA"])
-            / "breezy_local_streaming_dictation"
+            / "breezy_dictation"
             / "assets"
             / filename
         )
@@ -412,7 +500,7 @@ def _set_recording_indicator(active: bool) -> None:
 
         state_path = (
             Path(os.environ["LOCALAPPDATA"])
-            / "breezy_local_streaming_dictation"
+            / "breezy_dictation"
             / "recording.active"
         )
         if active:
@@ -468,16 +556,16 @@ class DictationDaemon:
         self._last_ws_text: str = ""
         self._ws_repeat_count: int = 0
         self._WS_MAX_REPEATS: int = 2  # allow 2 identical, suppress from 3rd
-        # Defer inter-chunk whitespace until the next committed chunk. This
-        # lets a user add punctuation immediately after committed text.
-        self._ws_has_output: bool = False
-        self._ws_last_char: str = ""
         self._all_caps_active: bool = False
         self._caps_active: bool = False
         self._cap_next: bool = False
         self._backtick_active: bool = False
         self._quote_state = QuoteState()
         self._manual_line_break_signal = ManualLineBreakSignal()
+        self._physical_context_reset_signal = PhysicalContextResetSignal()
+        self._physical_context_generation = ""
+        self._physical_context_last_sequence = 0
+        self._target_injection_session: TargetInjectionSession | None = None
         self._number_normalizer = StreamingNumberNormalizer()
         self._number_lock = threading.Lock()
         self._number_flush_timer: threading.Timer | None = None
@@ -487,14 +575,18 @@ class DictationDaemon:
         self._capitalize_new_paragraphs = config.formatting.capitalize_new_paragraphs
         self._capitalize_new_lines = config.formatting.capitalize_new_lines
         self._pending_spoken_boundary = "none"
-        runtime_config_path = os.environ.get("BREEZY_LOCAL_DICTATION_CONFIG_FILE")
+        runtime_config_path = os.environ.get("BREEZY_DICTATION_CONFIG_FILE") or os.environ.get(
+            "BREEZY_LOCAL_DICTATION_CONFIG_FILE"
+        )
         self._runtime_config_path = (
             Path(runtime_config_path) if runtime_config_path else None
         )
         self._formatting_timeout_s: float = _DEFAULT_FORMATTING_TIMEOUT_S
         self._last_speech_end_time: float = 0.0
         self._emission_history = SessionEmissionHistory()
-        ready_path = os.environ.get("BREEZY_LOCAL_DICTATION_READY_FILE")
+        ready_path = os.environ.get("BREEZY_DICTATION_READY_FILE") or os.environ.get(
+            "BREEZY_LOCAL_DICTATION_READY_FILE"
+        )
         self._readiness = ClientReadinessState(
             Path(ready_path) if ready_path else CONFIG_DIR / "client.ready"
         )
@@ -560,6 +652,91 @@ class DictationDaemon:
         self._pending_spoken_boundary = pending_boundary
         return self._apply_user_conversions(cased, match_text=match_text)
 
+    def _apply_persistent_formatting(
+        self,
+        text: str,
+        caret_context: CaretContext,
+        manual_line_break: int = 0,
+        *,
+        speech_start_time: float | None = None,
+        speech_end_time: float | None = None,
+    ) -> tuple[str, int]:
+        """Apply stateful formatting before shared boundary casing.
+
+        WebSocket callbacks and local utterance completions must advance the
+        same formatting state. The callback path has no audio timestamps, so
+        it uses the callback time for the same silence timeout used by local
+        transcription.
+        """
+        if speech_start_time is None:
+            speech_start_time = time.monotonic()
+        with self._lock:
+            if (
+                self._last_speech_end_time > 0.0
+                and (speech_start_time - self._last_speech_end_time)
+                >= self._formatting_timeout_s
+            ):
+                self._all_caps_active = False
+                self._caps_active = False
+                self._cap_next = False
+
+            original_all_caps = self._all_caps_active
+            original_caps = self._caps_active
+            original_cap_next = self._cap_next
+            original_backtick = self._backtick_active
+            original_quote = self._quote_state
+
+            preview, preview_all_caps = apply_all_caps_commands(
+                text,
+                original_all_caps,
+            )
+            preview, preview_caps, preview_cap_next = apply_formatting_commands(
+                preview,
+                original_caps,
+                original_cap_next,
+            )
+            preview, preview_backtick = apply_backtick_commands(
+                preview,
+                original_backtick,
+            )
+            preview, preview_quote = apply_quote_commands(
+                preview,
+                original_quote,
+            )
+
+            if preview and self.streaming and not manual_line_break:
+                manual_line_break = self._consume_manual_line_break()
+            if preview:
+                formatting_casing_active = any(
+                    (
+                        original_all_caps,
+                        original_caps,
+                        original_cap_next,
+                        preview_all_caps,
+                        preview_caps,
+                        preview_cap_next,
+                    )
+                )
+                formatted = self._apply_boundary_casing_and_conversions(
+                    preview,
+                    caret_context,
+                    manual_line_break,
+                    preserve_when_none=formatting_casing_active,
+                )
+            else:
+                formatted = ""
+
+            self._all_caps_active = preview_all_caps
+            self._caps_active = preview_caps
+            self._cap_next = preview_cap_next
+            self._backtick_active = preview_backtick
+            self._quote_state = preview_quote
+            if speech_end_time is not None:
+                self._last_speech_end_time = speech_end_time
+            else:
+                self._last_speech_end_time = speech_start_time
+        return formatted, manual_line_break
+
     def _normalize_numbers(self, text: str) -> str:
         if not self.streaming:
             return normalize_spoken_numbers(text)
@@ -616,12 +793,150 @@ class DictationDaemon:
         if self._manual_line_break_signal.path.exists():
             self._manual_line_break_signal.clear()
 
+    def _consume_physical_context_reset(self) -> bool:
+        sequence = self._physical_context_reset_signal.consume(
+            generation=self._physical_context_generation,
+            last_sequence=self._physical_context_last_sequence,
+        )
+        if sequence is None:
+            return False
+        with self._lock:
+            self._physical_context_last_sequence = sequence
+            self._target_injection_session = None
+        return True
+
+    def _window_session_key(
+        self,
+        target: FocusedControlDiagnostic | None,
+    ) -> tuple[str, str, int]:
+        identity = _target_identity(target)
+        if identity is None:
+            identity = ("", "")
+        return (*identity, get_foreground_window_handle())
+
+    @staticmethod
+    def _photoshop_layer_control_key(
+        target: FocusedControlDiagnostic | None,
+    ) -> tuple[str, str, str, int, str, str, int, tuple[str, ...]] | None:
+        if target is None:
+            return None
+        if (
+            target.foreground_executable.casefold() != "photoshop.exe"
+            or target.foreground_window_class.casefold() != "photoshop"
+            or target.class_name.casefold() != "edit"
+            or target.native_window_handle <= 0
+            or "owl.palette" not in {
+                ancestor.casefold() for ancestor in target.ancestor_classes
+            }
+        ):
+            return None
+        return (
+            target.foreground_executable.casefold(),
+            target.foreground_window_class.casefold(),
+            target.class_name.casefold(),
+            target.control_type_id or 0,
+            target.automation_id,
+            target.control_type.casefold(),
+            target.native_window_handle,
+            tuple(ancestor.casefold() for ancestor in target.ancestor_classes),
+        )
+
+    def _resolve_injection_context(self, context: CaretContext) -> CaretContext:
+        """Consume physical resets and resolve one target-bound injection session."""
+        self._consume_physical_context_reset()
+        window_key = self._window_session_key(context.target)
+        with self._lock:
+            session = self._target_injection_session
+            if session is None or session.window_key != window_key:
+                session = TargetInjectionSession(window_key=window_key)
+                self._target_injection_session = session
+
+        target = context.target
+        is_photoshop = bool(
+            target is not None
+            and target.foreground_executable.casefold() == "photoshop.exe"
+            and target.foreground_window_class.casefold() == "photoshop"
+        )
+        if is_photoshop:
+            control_key = self._photoshop_layer_control_key(target)
+            if context.available:
+                if control_key is not None and context.has_selection:
+                    if session.photoshop_control_key is None:
+                        session.photoshop_control_key = control_key
+                    elif session.photoshop_control_key != control_key:
+                        with self._lock:
+                            self._target_injection_session = None
+                elif session.photoshop_control_key is not None:
+                    with self._lock:
+                        self._target_injection_session = None
+                return context
+            elif session.photoshop_control_key is None:
+                return context
+            else:
+                return replace(context, injection_allowed=True)
+        elif session.photoshop_control_key is not None:
+            with self._lock:
+                self._target_injection_session = None
+            return context
+
+        return context
+
+    def _current_injection_session(
+        self,
+        target: FocusedControlDiagnostic | None,
+    ) -> TargetInjectionSession:
+        window_key = self._window_session_key(target)
+        with self._lock:
+            session = self._target_injection_session
+            if session is None or session.window_key != window_key:
+                session = TargetInjectionSession(window_key=window_key)
+                self._target_injection_session = session
+            return session
+
+    def _emit_text(
+        self,
+        injection: str,
+        text: str,
+        caret_context: CaretContext,
+    ) -> None:
+        if not injection:
+            return
+        try:
+            type_text(injection, expected_target=caret_context.target)
+        except Exception:
+            with self._lock:
+                self._target_injection_session = None
+            raise
+        session = self._current_injection_session(caret_context.target)
+        with self._lock:
+            session.has_output = True
+            session.last_char = text[-1]
+
     def _finalize_recording_boundaries(self) -> None:
-        """Clear manual and spoken boundary state after queued final output."""
+        """Clear manual and target-session state after queued final output."""
         self._manual_line_break_signal.clear()
         with self._lock:
+            self._target_injection_session = None
             self._pending_spoken_boundary = "none"
             self._finalization_pending = False
+
+    def _initialize_physical_context_generation(self) -> None:
+        """Create a daemon generation that invalidates restart residue."""
+        path = _default_runtime_path("physical_context.generation")
+        generation = _new_physical_context_generation()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
+            temporary.write_text(generation + "\n", encoding="ascii")
+            temporary.replace(path)
+            self._physical_context_generation = generation
+            self._physical_context_last_sequence = 0
+            self._physical_context_reset_signal.clear()
+            with self._lock:
+                self._target_injection_session = None
+        except OSError:
+            self._physical_context_generation = ""
+            log.warning("Could not initialize physical-context generation", exc_info=True)
 
     def _flush_pending_number_and_type(
         self,
@@ -636,7 +951,7 @@ class DictationDaemon:
             text = self._number_normalizer.flush()
         if not text:
             return
-        caret_context = get_caret_context()
+        caret_context = self._resolve_injection_context(get_caret_context())
         if (
             not caret_context.injection_allowed
             or (
@@ -658,8 +973,7 @@ class DictationDaemon:
             caret_context=caret_context,
             manual_line_break=manual_line_break,
         )
-        if injection:
-            type_text(injection, expected_target=caret_context.target)
+        self._emit_text(injection, text, caret_context)
 
     def _on_audio_chunk(self, audio: np.ndarray) -> None:
         """Called for each audio chunk from the microphone.
@@ -725,7 +1039,7 @@ class DictationDaemon:
             preserve_spoken_boundaries=True,
         )
         cleaned = self._normalize_numbers(cleaned)
-        caret_context = get_caret_context()
+        caret_context = self._resolve_injection_context(get_caret_context())
         if not caret_context.injection_allowed:
             if self._has_pending_number():
                 self._reset_number_normalizer()
@@ -750,20 +1064,21 @@ class DictationDaemon:
             else:
                 self._last_ws_text = normalized
                 self._ws_repeat_count = 0
-        manual_line_break = self._consume_manual_line_break()
-        cleaned = self._apply_boundary_casing_and_conversions(
+        cleaned, manual_line_break = self._apply_persistent_formatting(
             uncased_cleaned,
             caret_context,
-            manual_line_break,
         )
+        if not cleaned:
+            return
         try:
-            type_text(
+            self._emit_text(
                 self._prepare_ws_injection(
                     cleaned,
                     caret_context=caret_context,
                     manual_line_break=manual_line_break,
                 ),
-                expected_target=caret_context.target,
+                cleaned,
+                caret_context,
             )
             log.debug("WS typed: %d chars", len(cleaned))
         except Exception:
@@ -776,23 +1091,35 @@ class DictationDaemon:
         manual_line_break: bool = False,
     ) -> str:
         """Join text using actual caret surroundings when UIA is available."""
+        if not cleaned:
+            return ""
+        caret_context = self._resolve_injection_context(
+            caret_context or CaretContext()
+        )
+        if not caret_context.injection_allowed:
+            return ""
         no_leading_space = (
             ".,!?;:/%)]}'\u2019\u201d\u2014\u2026_" + EXPLICIT_DOT_COMMAND
         )
         no_space_after = "/([{'\"\u2018\u201c\u2014_" + EXPLICIT_DOT_COMMAND
-        no_trailing_space_before = (
-            ".,!?;:/%)]}'\u2019\u201d\u2014\u2026_" + EXPLICIT_DOT_COMMAND
+        session = self._current_injection_session(caret_context.target)
+        photoshop_selection = (
+            session.photoshop_control_key is not None
+            and caret_context.available
+            and caret_context.has_selection
+            and not session.photoshop_selection_consumed
         )
         with self._lock:
-            previous_char = self._ws_last_char
+            previous_char = session.last_char
             if caret_context is not None and caret_context.available:
-                previous_char = (
-                    ""
-                    if caret_context.is_empty_document
-                    else caret_context.before_char
-                )
+                if session.photoshop_control_key is None or not session.has_output:
+                    previous_char = (
+                        ""
+                        if caret_context.is_empty_document
+                        else caret_context.before_char
+                    )
                 if (
-                    self._ws_last_char == EXPLICIT_DOT_COMMAND
+                    session.last_char == EXPLICIT_DOT_COMMAND
                     and previous_char == "."
                 ):
                     # Preserve explicit `dot` intent after the marker has
@@ -807,9 +1134,9 @@ class DictationDaemon:
                 if not cleaned:
                     return ""
 
-            if caret_context is not None and caret_context.available:
+            if caret_context.available:
                 needs_space = (
-                    not caret_context.has_selection
+                    not photoshop_selection
                     and not manual_line_break
                     and bool(previous_char)
                     and not previous_char.isspace()
@@ -821,36 +1148,24 @@ class DictationDaemon:
                         and self._backtick_active
                     )
                 )
-                needs_trailing_space = (
-                    not caret_context.has_selection
-                    and not caret_context.is_empty_document
-                    and bool(caret_context.after_char)
-                    and not caret_context.after_char.isspace()
-                    and caret_context.after_char not in no_trailing_space_before
-                    and not cleaned[-1].isspace()
-                    and cleaned[-1] not in no_space_after
-                )
             else:
                 needs_space = (
-                    self._ws_has_output
+                    session.has_output
                     and not manual_line_break
-                    and not self._ws_last_char.isspace()
+                    and not previous_char.isspace()
                     and not cleaned[0].isspace()
                     and cleaned[0] not in no_leading_space
-                    and self._ws_last_char not in no_space_after
+                    and previous_char not in no_space_after
                     and not (
-                        self._ws_last_char == "`"
+                        previous_char == "`"
                         and self._backtick_active
                     )
                 )
-                needs_trailing_space = False
-
-            self._ws_has_output = True
-            self._ws_last_char = cleaned[-1]
+            if photoshop_selection:
+                session.photoshop_selection_consumed = True
         return (
             (" " if needs_space else "")
             + cleaned.replace(EXPLICIT_DOT_COMMAND, ".")
-            + (" " if needs_trailing_space else "")
         )
 
     def _transcribe_and_type(
@@ -891,7 +1206,7 @@ class DictationDaemon:
                 self._remove_prompt_leak(raw_text)
             )
             text = guard_pathological_repetition(self._normalize_numbers(text))
-            caret_context = get_caret_context()
+            caret_context = self._resolve_injection_context(get_caret_context())
             if not caret_context.injection_allowed:
                 if self._has_pending_number():
                     self._reset_number_normalizer()
@@ -972,16 +1287,12 @@ class DictationDaemon:
                 self._quote_state = preview_quote
                 self._last_speech_end_time = utterance_end_time
             if text:
-                injection = (
-                    self._prepare_ws_injection(
-                        text,
-                        caret_context=caret_context,
-                        manual_line_break=manual_line_break,
-                    )
-                    if self.streaming
-                    else text.replace(EXPLICIT_DOT_COMMAND, ".") + " "
+                injection = self._prepare_ws_injection(
+                    text.replace(EXPLICIT_DOT_COMMAND, "."),
+                    caret_context=caret_context,
+                    manual_line_break=manual_line_break,
                 )
-                type_text(injection, expected_target=caret_context.target)
+                self._emit_text(injection, text, caret_context)
                 log.debug("Typed: %d chars", len(text))
             elif not self.streaming:
                 log.info("No speech detected")
@@ -1009,7 +1320,7 @@ class DictationDaemon:
                 # Type directly — bypass repetition filter since pending
                 # text is the final unstreamed word, not a hallucination.
                 try:
-                    caret_context = get_caret_context()
+                    caret_context = self._resolve_injection_context(get_caret_context())
                     if not caret_context.injection_allowed:
                         self._discard_manual_line_break()
                         _log_focus_rejection(caret_context, "websocket_pending")
@@ -1035,13 +1346,14 @@ class DictationDaemon:
                         caret_context,
                         manual_line_break,
                     )
-                    type_text(
+                    self._emit_text(
                         self._prepare_ws_injection(
                             cleaned,
                             caret_context=caret_context,
                             manual_line_break=manual_line_break,
                         ),
-                        expected_target=caret_context.target,
+                        cleaned,
+                        caret_context,
                     )
                 except PathologicalDecoderOutput as error:
                     _notify_pathological_decoder_output(error)
@@ -1079,7 +1391,7 @@ class DictationDaemon:
                 )
                 if not text.strip():
                     return
-                caret_context = get_caret_context()
+                caret_context = self._resolve_injection_context(get_caret_context())
                 if not caret_context.injection_allowed:
                     _log_focus_rejection(caret_context, "websocket_batch")
                     return
@@ -1095,7 +1407,15 @@ class DictationDaemon:
                     caret_context,
                     manual_line_break,
                 )
-                type_text(text + " ", expected_target=caret_context.target)
+                self._emit_text(
+                    self._prepare_ws_injection(
+                        text,
+                        caret_context=caret_context,
+                        manual_line_break=manual_line_break,
+                    ),
+                    text,
+                    caret_context,
+                )
                 log.debug("WS batch typed: %d chars", len(text))
             else:
                 log.info("No speech detected (WS batch)")
@@ -1116,6 +1436,7 @@ class DictationDaemon:
                 )
                 return
             self._manual_line_break_signal.clear()
+            self._target_injection_session = None
             self._recording = True
             try:
                 if (
@@ -1131,8 +1452,6 @@ class DictationDaemon:
             self._recording_start = time.monotonic()
             self._last_ws_text = ""
             self._ws_repeat_count = 0
-            self._ws_has_output = False
-            self._ws_last_char = ""
             self._all_caps_active = False
             self._caps_active = False
             self._cap_next = False
@@ -1281,6 +1600,7 @@ class DictationDaemon:
 
     def start(self) -> None:
         """Start the dictation daemon."""
+        self._initialize_physical_context_generation()
         self._readiness.loading()
         _set_recording_indicator(active=False)
         if not self._check_server_available():

@@ -18,7 +18,7 @@ else:
 
 from platformdirs import user_config_dir
 
-APP_NAME = "faster-whisper-dictation"
+APP_NAME = "breezy-dictation"
 CONFIG_DIR = Path(user_config_dir(APP_NAME))
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 PID_FILE = CONFIG_DIR / "daemon.pid"

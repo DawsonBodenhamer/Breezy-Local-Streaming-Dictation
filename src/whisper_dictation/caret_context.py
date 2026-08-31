@@ -15,6 +15,7 @@ _UNAVAILABLE_CONTEXT_TARGET_ALLOWLIST = frozenset(
     {
         ("idea64.exe", "sunawtframe"),
         ("antigravity ide.exe", "chrome_widgetwin_1"),
+        ("photoshop.exe", "photoshop"),
     }
 )
 
@@ -37,6 +38,7 @@ class FocusedControlDiagnostic:
     native_window_handle: int = 0
     text_pattern: bool = False
     value_pattern: bool = False
+    ancestor_classes: tuple[str, ...] = ()
     error: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -56,6 +58,7 @@ class FocusedControlDiagnostic:
             "native_window_handle": self.native_window_handle,
             "text_pattern": self.text_pattern,
             "value_pattern": self.value_pattern,
+            "ancestor_classes": list(self.ancestor_classes),
             "error": self.error,
         }
 
@@ -340,6 +343,15 @@ def _focused_control_diagnostic(
     except Exception:
         native_window_handle = 0
 
+    ancestor_classes: list[str] = []
+    try:
+        ancestor = control.GetParentControl()
+        while ancestor is not None and len(ancestor_classes) < 8:
+            ancestor_classes.append(str(ancestor.ClassName or ""))
+            ancestor = ancestor.GetParentControl()
+    except Exception:
+        pass
+
     return FocusedControlDiagnostic(
         foreground_executable=executable_name,
         foreground_window_class=window_class,
@@ -355,6 +367,7 @@ def _focused_control_diagnostic(
         native_window_handle=native_window_handle,
         text_pattern=text_pattern is not None,
         value_pattern=value_pattern is not None,
+        ancestor_classes=tuple(ancestor_classes),
     )
 
 
