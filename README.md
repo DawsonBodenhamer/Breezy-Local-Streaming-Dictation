@@ -69,31 +69,51 @@ Examples below start on a fresh line, with the default capitalization choices on
       <td><code>Hello, world</code></td>
     </tr>
     <tr>
-      <td><code>new line second item</code></td>
-      <td>A new line starting with <code>Second item</code></td>
+      <td><code>i'm not arguing period i'm just explaining why i'm right exclamation mark</code></td>
+      <td><code>I'm not arguing. I'm just explaining why I'm right!</code></td>
     </tr>
     <tr>
-      <td><code>new paragraph next thought</code></td>
-      <td>A blank line starting with <code>Next thought</code></td>
+      <td><code>we're out of pork question mark</code></td>
+      <td><code>We're out of pork?</code></td>
     </tr>
     <tr>
-      <td><code>five thirty seven</code></td>
-      <td><code>5:37</code></td>
+      <td><code>my sandwich has three ingredients colon ham comma pork comma and more pork</code></td>
+      <td><code>My sandwich has three ingredients: ham, pork, and more pork</code></td>
     </tr>
     <tr>
-      <td><code>five hundred thirty seven</code></td>
-      <td><code>537</code></td>
+      <td><code>this is the first line new line and this is the second line</code></td>
+      <td><code>This is the first line<br>And this is the second line</code></td>
+    </tr>
+    <tr>
+      <td><code>this is the first paragraph new paragraph and this is the second paragraph</code></td>
+      <td><code>This is the first paragraph<br><br>And this is the second paragraph</code></td>
+    </tr>
+    <tr>
+      <td><code>i counted twenty-two rabbits</code></td>
+      <td><code>I counted 22 rabbits</code></td>
+    </tr>
+    <tr>
+      <td><code>meet me at five thirty seven</code></td>
+      <td><code>Meet me at 5:37</code></td>
+    </tr>
+    <tr>
+      <td><code>that will be five hundred thirty seven ducks</code></td>
+      <td><code>That will be 537 ducks</code></td>
+    </tr>
+    <tr>
+      <td><code>the combination is one two three four</code></td>
+      <td><code>The combination is one two three four</code> (separate digits less than 10 stay as words)</td>
     </tr>
     <tr>
       <td><code>digit seven</code></td>
       <td><code>7</code>, always a literal numeral</td>
     </tr>
     <tr>
-      <td><code>caps lock hi there</code></td>
-      <td><code>HI THERE</code></td>
+      <td><code>digit one digit two digit three</code></td>
+      <td><code>1 2 3</code></td>
     </tr>
     <tr>
-      <td><code>open quote local first close quote</code></td>
+      <td><code>quote local first close quote</code></td>
       <td><code>“local first”</code></td>
     </tr>
     <tr>
@@ -103,28 +123,20 @@ Examples below start on a fresh line, with the default capitalization choices on
   </tbody>
 </table>
 
-### Punctuation you can say
-
-You can dictate sentence punctuation with `comma`, `period`, `question mark`, `exclamation mark`, `semicolon`, and `colon`. Breezy also understands `open quote`, `close quote`, parentheses, brackets, `em dash`, `hyphen`, `slash`, `underscore`, `backtick`, `new line`, and `new paragraph`.
-
-The tray's **Automatic punctuation** choice controls punctuation Breezy infers rather than punctuation you say. It is off by default.
-
-### Numbers and times
-
-Spoken numbers of ten or greater become digits — `twenty-two rabbits` arrives as `22 rabbits` — while single-digit counts stay words. Breezy listens for times inside ordinary speech, so `five thirty seven PM` types `5:37 PM` and `five hundred thirty seven` types `537`; a run of separate digits such as `one two three` stays spoken words.
-
-To type one numeral without any interpretation, say `digit zero` through `digit nine`. Consecutive commands work fluently: `digit one digit two digit three` types `1 2 3`.
+Breezy also understands `semicolon`, brackets, `em dash`, `hyphen`, `slash`, `underscore`, and `backtick`. The tray's **Automatic punctuation** choice controls only the punctuation that the underlying Whisper dictation model infers on its own — it is off by default.
 
 ### Temporary all caps
 
-Say `caps lock` to turn temporary all caps on wherever the command appears in an utterance; words after it are capitalized while words before it are preserved. Say `caps lock` again within two seconds to turn it off, or let two seconds of silence pass and it expires automatically before your next phrase. For example, `now I'm testing caps lock is this capitalized` types `now I'm testing IS THIS CAPITALIZED`. The ordinary phrase `caps lock key` remains text. The existing `all caps on` and `all caps off` commands remain available.
+Say `caps lock` anywhere in a phrase to capitalize everything after it: `fresh bread caps lock straight out of the oven` types `fresh bread STRAIGHT OUT OF THE OVEN`. Say `caps lock` a second time to go back to normal, so `caps lock mustard caps lock and mayo please` types `MUSTARD and mayo please`. If you stop speaking for two seconds, the mode expires on its own before your next phrase — you never have to remember to turn it off.
+
+Only the exact command counts: `my caps lock key is broken` types as ordinary text. You can also say `all caps on` and `all caps off` to do same thing, if you're a psychopath.
 
 ## Everyday controls
 
 <table>
   <thead>
     <tr>
-      <th>Tray icon menu choice</th>
+      <th>Tray menu choice</th>
       <th>What it does</th>
     </tr>
   </thead>
