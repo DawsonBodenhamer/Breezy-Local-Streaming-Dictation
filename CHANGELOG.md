@@ -8,56 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.3] - Unreleased
 
 ### Added
-- **Breezy Dictation product identity**
-  - Renamed the current app, command, runtime folder, tray labels, and distributable archive to Breezy Dictation while keeping the existing GitHub repository address available for current releases.
-  - Upgrades move configuration, corrections, model content, logs, and rollback data from the previous runtime folder into the new authority and leave a recoverable migration marker.
 - **Optional automatic punctuation**
   - Added a tray choice that lets each user keep inferred sentence punctuation on or off while preserving punctuation they dictate explicitly and punctuation inside numbers, versions, and contractions.
 - **Spoken number formatting**
-  - Breezy now rechecks ambiguous integer-only speech to distinguish times such as “five thirty seven” from cardinal numbers such as “five hundred thirty seven,” converts values of 10 or greater to digits, and joins large numbers spoken across short pauses.
+  - Breezy now converts spoken numbers of ten or greater to digits, so `twenty-two rabbits` becomes `22 rabbits` while single-digit counts stay words.
+  - Ambiguous number speech is rechecked to tell times from cardinals: `five thirty seven PM` types `5:37 PM` and `five hundred thirty seven` types `537`.
 - **Explicit digit commands**
   - Say `digit zero` through `digit nine` to type one literal numeral without having it interpreted as a time or larger number, including fluent consecutive commands and commands directly after dictated underscores or other separators.
 - **Paragraph and line capitalization controls**
-  - Added independent checked tray choices for capitalizing text at empty documents and blank-line paragraphs or after one line break, including spoken `new paragraph` and `new line` commands across streamed phrases.
-  - Both choices default on, preserve exact correction output, and leave sentence-after-period capitalization unchanged.
+  - Added new tray menu settings for capitalizing text at empty documents and blank-line paragraphs or after one line break, including spoken `new paragraph` and `new line` commands across streamed phrases.
+  - Both choices default on.
 - **Temporary all-caps toggle**
-  - Say `caps lock` to turn temporary all caps on, repeat it within two seconds to turn it off, or let it expire automatically after two seconds of silence. Existing `all caps on` and `all caps off` commands remain available.
+  - Say `caps lock` to turn temporary all caps on, repeat it within two seconds to turn it off, or let it expire automatically after two seconds of silence. Existing `all caps on` and `all caps off` commands remain available but are harder to pronounce so that's why I replaced them.
 - **Grouped dictation corrections**
-  - One correction can now contain several phrases Breezy may hear and one exact result to type. Suggested groups show every phrase on its own row, including phrases that contain punctuation.
+  - One correction can now contain several phrases Breezy may hear and one exact result to type instead.
 - **Clearer startup and troubleshooting information**
   - The tray now tells you when dictation is still loading or could not start, instead of accepting the shortcut without explaining why nothing happened.
-  - Breezy now records more useful troubleshooting logging when it cannot hear you or type into the selected text box. These details never include your audio or dictated words.
-- **Microphone sensitivity check**
-  - New `mic-diagnostic` command measures, for a bounded number of short trials, how loudly your speech reaches the speech detector (peak level, speech-probability peak, and how often speech crossed the detection threshold) so microphone-distance problems can be confirmed with numbers before any settings change. It never records audio or dictated words.
+
+### Changed
+- **Breezy Dictation name**
+  - Renamed the app to Breezy Dictation. The original name was a mouthful lol
 
 ### Fixed
-- **Startup migration**
-  - Preserved an existing automatic-at-logon choice when moving from the legacy runtime folder to the Breezy Dictation runtime, while restoring the previous startup task if the migration cannot complete.
+- **Repeated-phrase handling**
+  - Stopped Breezy from repeatedly typing the same phrases during a single dictation session while still allowing intentional repetition.
+- **Removed stray starter text**
+  - Removed starter-example text that could occasionally appear in your dictation by mistake. I had tried inserting this text to help reduce commas, and it kind of worked but it also caused the model to frequently insert the example phrase into the output, which is a worse trade-off. 
 - **Reliable logon startup**
   - Registers automatic startup directly against the Breezy supervisor, so a missing windowless-script wrapper cannot produce a Windows Script Host error or prevent startup.
-- **Faster Photoshop and general dictation**
-  - Removed a redundant second walk of parent windows that Breezy performed only as a final safety check right before typing. The Photoshop layer-name check that needs those parent windows still runs earlier as before, so this is expected to reduce the extra delay observed while dictating into Photoshop without changing what it recognizes.
-  - Timing for each processing step (speech detection, transcription, target inspection, final safety check, and typing) is now measured and logged separately, without recording your words, so future latency reports can be attributed to the right step.
-- **No more silently missing phrases**
-  - Every recognized phrase that is not typed now gets a recorded reason: focus was unsupported, the focused application changed while processing, the phrase matched the intentional-repetition guard, nothing was recognized, or typing failed.
-  - When the focused application changes while a phrase is being processed, Breezy now tells you once (instead of silently dropping the phrase), refuses to type into the newly focused application, and lets you simply say the phrase again.
-  - Retrying a phrase after a failed typing attempt or an unsupported-focus rejection no longer inherits any repetition suppression from the failed attempt, and switching between applications resets repetition tracking so a phrase repeated in a new application is typed normally.
-- **Deterministic phrase spacing**
-  - Leaves the caret immediately after dictated content without appending a completion space at the end of a document or before existing same-line or later-line text.
-  - Inserts exactly one separator between ordinary phrases and reliably resets IntelliJ Markdown spacing after physical keyboard or mouse input without treating injected dictation input as physical context.
-  - Restores Photoshop Text-tool and inline layer-name dictation; selected layer names consume their initial selection once, and pauses between streamed layer-name phrases produce one space.
-  - Keeps practical boundaries coherent: `new line second item` and `new paragraph next thought` preserve their multiline layout, `five thirty seven PM` becomes `5:37 PM`, `3,542,308` remains one number, and `caps lock this is temporary` produces `THIS IS TEMPORARY` until the mode expires.
-- **Streaming input boundaries**
-  - Kept longer spoken number sequences from being partially rewritten as clock times.
-  - Correctly distinguished “testing one twenty-three” as `testing 1:23`, “testing one hundred twenty-three” as `testing 123`, and “testing one two three” as unchanged spoken words when speech recognition initially collapses their numeric forms.
-  - Kept large-number fragments together across short pauses, committed a completed value after a brief quiet grace, and deferred that commit when speech resumes, preventing delayed fragments such as “five hundred thirty-seven thousand” from leaking into a later phrase without adding seconds of latency.
-  - Prevented Breezy from adding a remembered leading space after you press Enter or Shift+Enter between streamed phrases in the same window, and capitalized the next phrase consistently even when the editor reports stale caret context.
-- **More reliable dictation**
-  - Restored first-attempt insertion after pressing Enter or Shift+Enter instead of dropping the next phrase while resolving its manual line boundary.
-  - Removed starter-example text that could occasionally appear in your dictation by mistake.
-  - Stopped Breezy from repeatedly typing the same phrases during a single dictation session while still allowing intentional repetition.
-- **Spoken punctuation commands**
-  - Commands such as `question mark` now work even when speech recognition places an unexpected pause or punctuation mark between the words, and the observed `backtic` spelling now closes a code span correctly.
 
 ---
 
