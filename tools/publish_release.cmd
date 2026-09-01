@@ -1,7 +1,7 @@
 @echo off
 setlocal
 pushd "%~dp0.."
-python.exe -u "tools\publish_release.py" %*
+python.exe -X utf8 -u "tools\publish_release.py" %*
 set "BREEZY_EXIT=%ERRORLEVEL%"
 popd
 if "%BREEZY_EXIT%"=="3" (
