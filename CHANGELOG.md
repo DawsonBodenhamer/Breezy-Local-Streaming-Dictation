@@ -27,12 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Clearer startup and troubleshooting information**
   - The tray now tells you when dictation is still loading or could not start, instead of accepting the shortcut without explaining why nothing happened.
   - Breezy now records more useful troubleshooting logging when it cannot hear you or type into the selected text box. These details never include your audio or dictated words.
+- **Microphone sensitivity check**
+  - New `mic-diagnostic` command measures, for a bounded number of short trials, how loudly your speech reaches the speech detector (peak level, speech-probability peak, and how often speech crossed the detection threshold) so microphone-distance problems can be confirmed with numbers before any settings change. It never records audio or dictated words.
 
 ### Fixed
 - **Startup migration**
   - Preserved an existing automatic-at-logon choice when moving from the legacy runtime folder to the Breezy Dictation runtime, while restoring the previous startup task if the migration cannot complete.
 - **Reliable logon startup**
   - Registers automatic startup directly against the Breezy supervisor, so a missing windowless-script wrapper cannot produce a Windows Script Host error or prevent startup.
+- **Faster Photoshop and general dictation**
+  - Removed a redundant second walk of parent windows that Breezy performed only as a final safety check right before typing. The Photoshop layer-name check that needs those parent windows still runs earlier as before, so this is expected to reduce the extra delay observed while dictating into Photoshop without changing what it recognizes.
+  - Timing for each processing step (speech detection, transcription, target inspection, final safety check, and typing) is now measured and logged separately, without recording your words, so future latency reports can be attributed to the right step.
+- **No more silently missing phrases**
+  - Every recognized phrase that is not typed now gets a recorded reason: focus was unsupported, the focused application changed while processing, the phrase matched the intentional-repetition guard, nothing was recognized, or typing failed.
+  - When the focused application changes while a phrase is being processed, Breezy now tells you once (instead of silently dropping the phrase), refuses to type into the newly focused application, and lets you simply say the phrase again.
+  - Retrying a phrase after a failed typing attempt or an unsupported-focus rejection no longer inherits any repetition suppression from the failed attempt, and switching between applications resets repetition tracking so a phrase repeated in a new application is typed normally.
 - **Deterministic phrase spacing**
   - Leaves the caret immediately after dictated content without appending a completion space at the end of a document or before existing same-line or later-line text.
   - Inserts exactly one separator between ordinary phrases and reliably resets IntelliJ Markdown spacing after physical keyboard or mouse input without treating injected dictation input as physical context.

@@ -341,6 +341,9 @@ class SpeechDetector:
                 "peak_rms": round(self._peak_rms, 6),
                 "max_probability": round(self._max_probability, 4),
                 "subthreshold_chunks": self._subthreshold_chunks,
+                "threshold_crossings": (
+                    self._observed_chunks - self._subthreshold_chunks
+                ),
                 "accepted_utterances": self._detected_utterances,
                 "rejected_short_utterances": self._rejected_utterances,
             }
@@ -357,3 +360,18 @@ class SpeechDetector:
             summary["accepted_utterances"],
             summary["rejected_short_utterances"],
         )
+
+
+def summarize_mic_trial(detector: SpeechDetector, label: str) -> dict[str, object]:
+    """Return one privacy-safe microphone-trial summary without audio or text."""
+    summary = detector.session_summary()
+    return {
+        "label": label,
+        "threshold": detector.threshold,
+        "chunks": summary["chunks"],
+        "peak_rms": summary["peak_rms"],
+        "max_probability": summary["max_probability"],
+        "threshold_crossings": summary["threshold_crossings"],
+        "short_events": summary["rejected_short_utterances"],
+        "completed_utterances": summary["accepted_utterances"],
+    }

@@ -301,6 +301,7 @@ def _focused_control_diagnostic(
     window_class: str,
     text_pattern: Any | None = None,
     value_pattern: Any | None = None,
+    collect_ancestors: bool = True,
 ) -> FocusedControlDiagnostic:
     control_type = None
     try:
@@ -344,13 +345,14 @@ def _focused_control_diagnostic(
         native_window_handle = 0
 
     ancestor_classes: list[str] = []
-    try:
-        ancestor = control.GetParentControl()
-        while ancestor is not None and len(ancestor_classes) < 8:
-            ancestor_classes.append(str(ancestor.ClassName or ""))
-            ancestor = ancestor.GetParentControl()
-    except Exception:
-        pass
+    if collect_ancestors:
+        try:
+            ancestor = control.GetParentControl()
+            while ancestor is not None and len(ancestor_classes) < 8:
+                ancestor_classes.append(str(ancestor.ClassName or ""))
+                ancestor = ancestor.GetParentControl()
+        except Exception:
+            pass
 
     return FocusedControlDiagnostic(
         foreground_executable=executable_name,
@@ -371,8 +373,15 @@ def _focused_control_diagnostic(
     )
 
 
-def get_focused_control_diagnostic() -> FocusedControlDiagnostic:
-    """Return focused-control metadata without reading text or changing state."""
+def get_focused_control_diagnostic(
+    collect_ancestors: bool = True,
+) -> FocusedControlDiagnostic:
+    """Return focused-control metadata without reading text or changing state.
+
+    Ancestry collection is needed only by the Photoshop layer-name
+    discriminator; callers that never read ancestor classes pass
+    ``collect_ancestors=False`` to skip the parent walk entirely.
+    """
     executable_name, window_class = _foreground_target_identity()
     try:
         import uiautomation as auto
@@ -394,6 +403,7 @@ def get_focused_control_diagnostic() -> FocusedControlDiagnostic:
                 window_class,
                 text_pattern,
                 value_pattern,
+                collect_ancestors=collect_ancestors,
             )
     except Exception as exc:
         log.debug("Focused-control diagnostic failed", exc_info=True)
@@ -402,6 +412,14 @@ def get_focused_control_diagnostic() -> FocusedControlDiagnostic:
             foreground_window_class=window_class,
             error=type(exc).__name__,
         )
+
+
+def foreground_target_identity() -> tuple[str, str] | None:
+    """Return the foreground (executable, window class) without UI Automation."""
+    executable, window_class = _foreground_target_identity()
+    if not executable or not window_class:
+        return None
+    return executable, window_class
 
 
 def _is_focused_writable_edit_control(control: Any, auto: Any) -> bool:

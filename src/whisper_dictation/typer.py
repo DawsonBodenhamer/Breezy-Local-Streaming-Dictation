@@ -5,11 +5,20 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 
 from .caret_context import FocusedControlDiagnostic, get_focused_control_diagnostic
 
 log = logging.getLogger(__name__)
 _typing_lock = threading.Lock()
+
+
+def _target_identity(target: FocusedControlDiagnostic) -> tuple[str, str] | None:
+    executable = target.foreground_executable.strip().casefold()
+    window_class = target.foreground_window_class.strip().casefold()
+    if not executable or not window_class:
+        return None
+    return executable, window_class
 
 
 def _is_modern_notepad_window(target: FocusedControlDiagnostic) -> bool:
@@ -180,7 +189,14 @@ def type_text(
     log.debug("Typing %d chars", len(text))
     with _typing_lock:
         if sys.platform == "win32":
-            current_target = get_focused_control_diagnostic()
+            safety_started = time.monotonic()
+            # The final safety snapshot never reads ancestor classes, so it
+            # skips the parent walk that only the Photoshop layer-name
+            # discriminator needs.
+            current_target = get_focused_control_diagnostic(
+                collect_ancestors=False
+            )
+            safety_ms = (time.monotonic() - safety_started) * 1000.0
             expected_notepad = (
                 expected_target is not None
                 and _is_modern_notepad_window(expected_target)
@@ -195,8 +211,15 @@ def type_text(
                     raise RuntimeError(
                         "Focused Notepad control changed before text injection"
                     )
+                dispatch_started = time.monotonic()
                 if not _replace_windows_notepad_selection(text, current_target):
                     raise RuntimeError("Focused Notepad native replacement failed")
+                log.info(
+                    "Injection phases: safety_snapshot_ms=%.1f dispatch_ms=%.1f "
+                    "path=notepad",
+                    safety_ms,
+                    (time.monotonic() - dispatch_started) * 1000.0,
+                )
                 return
             if current_notepad:
                 if expected_target is not None:
@@ -207,9 +230,38 @@ def type_text(
                     raise RuntimeError(
                         "Focused Notepad native conditions are unavailable"
                     )
+                dispatch_started = time.monotonic()
                 if not _replace_windows_notepad_selection(text, current_target):
                     raise RuntimeError("Focused Notepad native replacement failed")
+                log.info(
+                    "Injection phases: safety_snapshot_ms=%.1f dispatch_ms=%.1f "
+                    "path=notepad_unexpected",
+                    safety_ms,
+                    (time.monotonic() - dispatch_started) * 1000.0,
+                )
                 return
+            expected_identity = (
+                _target_identity(expected_target)
+                if expected_target is not None
+                else None
+            )
+            current_identity = _target_identity(current_target)
+            if expected_target is not None and (
+                expected_identity is None
+                or current_identity is None
+                or expected_identity != current_identity
+            ):
+                raise RuntimeError(
+                    "Focused application identity is unavailable or changed "
+                    "before text injection"
+                )
+            dispatch_started = time.monotonic()
             _type_windows(text)
+            log.info(
+                "Injection phases: safety_snapshot_ms=%.1f dispatch_ms=%.1f "
+                "path=sendinput",
+                safety_ms,
+                (time.monotonic() - dispatch_started) * 1000.0,
+            )
         else:
             raise RuntimeError(f"Unsupported platform: {sys.platform}")

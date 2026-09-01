@@ -534,6 +534,58 @@ def cmd_transcribe(args: argparse.Namespace) -> None:
         engine.close()
 
 
+def mic_diagnostic_bounds_error(trials: int, duration_s: float) -> str | None:
+    """Return an error string when microphone-diagnostic bounds are exceeded."""
+    if not 1 <= trials <= 5:
+        return f"trials must be between 1 and 5, got {trials}"
+    if not 0.5 <= duration_s <= 30.0:
+        return f"duration must be between 0.5 and 30 seconds, got {duration_s}"
+    return None
+
+
+def cmd_mic_diagnostic(args: argparse.Namespace) -> None:
+    """Run bounded, transcript-free microphone/VAD sensitivity trials."""
+    import json as json_module
+    import time as time_module
+
+    from .audio import AudioStream
+    from .vad import SpeechDetector, summarize_mic_trial
+
+    error = mic_diagnostic_bounds_error(args.trials, args.duration)
+    if error is not None:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+
+    config = load_config(args.config)
+    validate(config)
+    labels = [label.strip() for label in (args.labels or "").split(",") if label.strip()]
+    summaries = []
+    for index in range(args.trials):
+        label = labels[index] if index < len(labels) else f"trial-{index + 1}"
+        detector = SpeechDetector(
+            sample_rate=config.audio.sample_rate,
+            threshold=config.vad.threshold,
+            silence_ms=config.vad.silence_ms,
+            min_speech_ms=config.vad.min_speech_ms,
+            pre_speech_ms=config.vad.pre_speech_ms,
+        )
+        detector.reset()
+        stream = AudioStream(config.audio, detector.process_chunk)
+        print(f"Trial {index + 1}/{args.trials} ({label}): speak now...", file=sys.stderr)
+        try:
+            stream.start()
+            time_module.sleep(args.duration)
+        finally:
+            stream.stop()
+        detector.flush()
+        summaries.append(summarize_mic_trial(detector, label=label))
+        if not args.json:
+            print(json_module.dumps(summaries[-1]))
+
+    if args.json:
+        print(json_module.dumps(summaries))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="breezy-dictation",
@@ -583,6 +635,36 @@ def main() -> None:
     # devices
     p_devices = sub.add_parser("devices", help="List audio input devices")
     p_devices.set_defaults(func=cmd_devices)
+
+    # mic-diagnostic
+    p_mic = sub.add_parser(
+        "mic-diagnostic",
+        help="Measure microphone/VAD sensitivity without transcription",
+    )
+    p_mic.add_argument(
+        "--trials",
+        type=int,
+        default=3,
+        help="number of bounded measurement trials (1-5)",
+    )
+    p_mic.add_argument(
+        "--duration",
+        type=float,
+        default=8.0,
+        metavar="SECONDS",
+        help="seconds per trial (0.5-30)",
+    )
+    p_mic.add_argument(
+        "--labels",
+        help="comma-separated trial labels (e.g. normal,far,close)",
+    )
+    p_mic.add_argument(
+        "--json",
+        action="store_true",
+        help="print the complete trial matrix as one JSON array",
+    )
+    p_mic.add_argument("--config", type=Path, help="config file path")
+    p_mic.set_defaults(func=cmd_mic_diagnostic)
 
     # transcribe
     p_trans = sub.add_parser("transcribe", help="Transcribe audio file or recording")
