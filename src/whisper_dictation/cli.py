@@ -286,9 +286,7 @@ def cmd_stop(args: argparse.Namespace) -> None:
 
     # Wait up to 5s for the process to exit
     for _ in range(50):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_exists(pid):
             break
         time.sleep(0.1)
     else:

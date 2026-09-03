@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.4] - Unreleased
 
+### Fixed
+- **Reliable tray restart on Windows**
+  - Fixed **Restart dictation** leaving Breezy unable to start again after the existing dictation process stopped successfully.
+
 ---
 
 ## [1.0.3] - 2026-08-31
