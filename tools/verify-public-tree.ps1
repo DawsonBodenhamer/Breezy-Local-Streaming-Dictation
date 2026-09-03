@@ -17,7 +17,6 @@ $required = @(
     'assets\breezy_dictation_icon_hd.png',
     'assets\local_dictation_start.wav',
     'assets\local_dictation_stop.wav',
-    'assets\tray_menu.png',
     'licenses\faster-whisper-dictation-MIT.txt',
     'src\whisper_dictation\__init__.py',
     'src\whisper_dictation\engine\local.py',
