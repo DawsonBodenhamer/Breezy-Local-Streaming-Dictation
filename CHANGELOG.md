@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.5] - Unreleased
 
+### Fixed
+- **Windowless startup on Windows**
+  - Prevented Breezy's automatic logon startup from leaving a Windows Terminal window open for the entire session.
+- **Reliable next-word capitalization**
+  - Saying `cap` now reliably capitalizes exactly the next word, no matter where you are in the text and regardless of the Capitalization choices for new paragraphs and new lines. Those choices are only supposed to decide whether new paragraphs and new lines start with a capital letter on their own, but they could silently swallow the explicit capital, so `cap dog` sometimes typed plain `dog` mid-sentence.
+
+### Added
+- **The `capital` command**
+  - `capital` now works like `cap` but is easier to hear: `capital dog` types `Dog`. One exception keeps everyday speech natural: in `the capital of France`, the word `capital` stays ordinary dictated text.
+
 ---
 
 ## [1.0.4] - 2026-09-03

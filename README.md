@@ -131,6 +131,14 @@ Say `caps lock` anywhere in a phrase to capitalize everything after it: `fresh b
 
 Only the exact command counts: `my caps lock key is broken` types as ordinary text. You can also say `all caps on` and `all caps off` to do same thing, if you're a psychopath.
 
+### Capitalize the next word
+
+Say `capital` before a word to give just that one word a capital letter: `capital dog` types `Dog`, and `I have a capital dog named Rex` types `I have a Dog named Rex`. The short command `cap` does the same thing, but I pick `capital` because the ending of `cap` is hard to hear on a microphone.
+
+This works anywhere — mid-sentence, after a new line, or at the start of a fresh paragraph — and it ignores the Capitalization choices in the tray menu, which only decide whether new paragraphs and new lines start capitalized on their own. Like the caps modes, `capital` expires on its own if you stop speaking for two seconds before saying the word.
+
+One exception keeps normal speech flowing: in `the capital of France`, the word `capital` is just the word, so Breezy types `the capital of France` exactly as you said it.
+
 ## Everyday controls
 
 <table>

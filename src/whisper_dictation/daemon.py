@@ -215,7 +215,7 @@ _OPEN_QUOTE_COMMAND = "\ue001"
 _CLOSE_QUOTE_COMMAND = "\ue002"
 _PENDING_CLOSE_COMMAND = "\ue003"
 _FORMAT_COMMAND_RE = re.compile(
-    r"(?:[,.!?;:]\s*)?\b(caps on|caps off|cap)\b"
+    r"(?:[,.!?;:]\s*)?\b(caps on|caps off|capital|cap)\b"
     r"(?:\s*[,.!?;:])?",
     re.IGNORECASE,
 )
@@ -381,27 +381,48 @@ def _capitalize_word_initials(text: str, every_word: bool) -> tuple[str, bool]:
     return re.sub(r"\b([A-Za-z])", replace, text), bool(changed)
 
 
+def _ordinary_capital_usage(text: str, match: re.Match[str]) -> bool:
+    """Recognize 'the capital of' as ordinary dictated text, not a command."""
+    preceding = re.findall(r"[A-Za-z']+", text[: match.start()])
+    following = re.search(r"[A-Za-z']+", text[match.end() :])
+    return (
+        bool(preceding)
+        and preceding[-1].lower() == "the"
+        and following is not None
+        and following.group().lower() == "of"
+    )
+
+
 def apply_formatting_commands(
     text: str,
     caps_active: bool,
     cap_next: bool,
-) -> tuple[str, bool, bool]:
-    """Apply line-break and title-casing commands with persistent state."""
+) -> tuple[str, bool, bool, bool]:
+    """Apply line-break and title-casing commands with persistent state.
+
+    The fourth value reports whether any portion of this utterance was
+    capitalized through persistent caps or next-word capitalization.
+    """
     output: list[str] = []
     cursor = 0
+    casing_applied = False
 
     def append_words(portion: str) -> None:
-        nonlocal cap_next
+        nonlocal cap_next, casing_applied
         if caps_active:
-            portion, _ = _capitalize_word_initials(portion, every_word=True)
+            portion, used = _capitalize_word_initials(portion, every_word=True)
+            casing_applied = casing_applied or used
         elif cap_next:
             portion, used = _capitalize_word_initials(portion, every_word=False)
             cap_next = not used
+            casing_applied = casing_applied or used
         output.append(portion)
 
     for match in _FORMAT_COMMAND_RE.finditer(text):
-        append_words(text[cursor:match.start()])
         command = match.group(1).lower()
+        if command == "capital" and _ordinary_capital_usage(text, match):
+            continue
+        append_words(text[cursor:match.start()])
         if command == "caps on":
             caps_active = True
         elif command == "caps off":
@@ -414,7 +435,7 @@ def apply_formatting_commands(
     cleaned = "".join(output)
     cleaned = re.sub(r"[ \t]*\n[ \t]*", "\n", cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    return cleaned.strip(" \t"), caps_active, cap_next
+    return cleaned.strip(" \t"), caps_active, cap_next, casing_applied
 
 
 def apply_all_caps_commands(text: str, active: bool) -> tuple[str, bool]:
@@ -695,6 +716,7 @@ class DictationDaemon:
         manual_break_count: int = 0,
         *,
         preserve_when_none: bool = False,
+        preserve_explicit_initial: bool = False,
     ) -> str:
         """Case output from uncased match text, then apply corrections exactly once."""
         self._refresh_capitalization_settings()
@@ -706,6 +728,7 @@ class DictationDaemon:
             capitalize_new_paragraphs=self._capitalize_new_paragraphs,
             capitalize_new_lines=self._capitalize_new_lines,
             preserve_initial_when_none=preserve_when_none,
+            preserve_explicit_initial=preserve_explicit_initial,
         )
         self._pending_spoken_boundary = pending_boundary
         return self._apply_user_conversions(cased, match_text=match_text)
@@ -748,10 +771,12 @@ class DictationDaemon:
                 text,
                 original_all_caps,
             )
-            preview, preview_caps, preview_cap_next = apply_formatting_commands(
-                preview,
-                original_caps,
-                original_cap_next,
+            preview, preview_caps, preview_cap_next, casing_applied = (
+                apply_formatting_commands(
+                    preview,
+                    original_caps,
+                    original_cap_next,
+                )
             )
             preview, preview_backtick = apply_backtick_commands(
                 preview,
@@ -773,6 +798,7 @@ class DictationDaemon:
                         preview_all_caps,
                         preview_caps,
                         preview_cap_next,
+                        casing_applied,
                     )
                 )
                 formatted = self._apply_boundary_casing_and_conversions(
@@ -780,6 +806,7 @@ class DictationDaemon:
                     caret_context,
                     manual_line_break,
                     preserve_when_none=formatting_casing_active,
+                    preserve_explicit_initial=formatting_casing_active,
                 )
             else:
                 formatted = ""
@@ -1464,10 +1491,12 @@ class DictationDaemon:
                     text,
                     original_all_caps,
                 )
-                preview, preview_caps, preview_cap_next = apply_formatting_commands(
-                    preview,
-                    original_caps,
-                    original_cap_next,
+                preview, preview_caps, preview_cap_next, casing_applied = (
+                    apply_formatting_commands(
+                        preview,
+                        original_caps,
+                        original_cap_next,
+                    )
                 )
                 preview, preview_backtick = apply_backtick_commands(
                     preview,
@@ -1489,6 +1518,7 @@ class DictationDaemon:
                             preview_all_caps,
                             preview_caps,
                             preview_cap_next,
+                            casing_applied,
                         )
                     )
                     text = self._apply_boundary_casing_and_conversions(
@@ -1496,6 +1526,7 @@ class DictationDaemon:
                         caret_context,
                         manual_line_break,
                         preserve_when_none=formatting_casing_active,
+                        preserve_explicit_initial=formatting_casing_active,
                     )
                 else:
                     text = ""

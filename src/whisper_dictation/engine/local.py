@@ -34,6 +34,7 @@ _REPETITION_GUARD_EXEMPT_WORDS = frozenset(
         "all",
         "backtick",
         "cap",
+        "capital",
         "caps",
         "close",
         "comma",
@@ -1117,8 +1118,14 @@ def apply_boundary_phrase_casing(
     *,
     capitalize_new_paragraphs: bool,
     capitalize_new_lines: bool,
+    preserve_explicit_initial: bool = False,
 ) -> str:
-    """Apply one boundary's configured casing without altering internal casing."""
+    """Apply one boundary's configured casing without altering internal casing.
+
+    When preserve_explicit_initial is set, explicit capitalization from a
+    formatting command in the same utterance is never lowercased; the
+    boundary's own uppercase choice and other fixes still apply.
+    """
     enabled = (
         capitalize_new_paragraphs
         if boundary in ("document", "paragraph")
@@ -1133,7 +1140,7 @@ def apply_boundary_phrase_casing(
             text,
             count=1,
         )
-    else:
+    elif not preserve_explicit_initial:
         text = lowercase_phrase_initial(text)
     text = re.sub(
         r"\bi(?=\b|['’](?:m|d|ll|ve)\b)",
@@ -1162,6 +1169,7 @@ def format_spoken_boundaries(
     capitalize_new_paragraphs: bool,
     capitalize_new_lines: bool,
     preserve_initial_when_none: bool = False,
+    preserve_explicit_initial: bool = False,
 ) -> tuple[str, str, str]:
     """Render spoken markers and case only the first following alphabetic char."""
     marker_pattern = re.compile(
@@ -1215,6 +1223,7 @@ def format_spoken_boundaries(
                     boundary,
                     capitalize_new_paragraphs=capitalize_new_paragraphs,
                     capitalize_new_lines=capitalize_new_lines,
+                    preserve_explicit_initial=preserve_explicit_initial,
                 )
             )
             if re.search(r"[A-Za-z]", piece):
