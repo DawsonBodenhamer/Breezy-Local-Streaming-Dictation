@@ -197,12 +197,16 @@ function Register-StartupTaskForRoot {
         [Parameter(Mandatory)][string]$Root
     )
     $supervisor = Join-Path $Root 'supervisor.ps1'
+    $startupLauncher = Join-Path $Root 'startup_hidden.vbs'
     if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
         throw "Cannot register startup task $TaskName because its supervisor is missing: $supervisor"
     }
+    if (-not (Test-Path -LiteralPath $startupLauncher -PathType Leaf)) {
+        throw "Cannot register startup task $TaskName because its windowless launcher is missing: $startupLauncher"
+    }
     $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" run' -f $supervisor
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
+    $arguments = '"{0}"' -f $startupLauncher
+    $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $arguments
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)

@@ -45,6 +45,7 @@ $PhysicalContextSignal = Join-Path $Runtime 'physical_context_signal.ahk'
 $HotkeyApply = Join-Path $Runtime 'hotkey_apply.ps1'
 $HotkeyReadyFile = Join-Path $Runtime 'hotkey.ready'
 $SupervisorScript = Join-Path $Runtime 'supervisor.ps1'
+$StartupLauncher = Join-Path $Runtime 'startup_hidden.vbs'
 $Logs = Join-Path $Runtime 'logs'
 $SupervisorLog = Join-Path $Logs 'supervisor.log'
 $ClientOut = Join-Path $Logs 'production_client.stdout.log'
@@ -71,7 +72,7 @@ function Write-SupervisorLog {
 }
 
 function Assert-Install {
-    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientExe, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $FormattingUpdater, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $PhysicalContextSignal, $HotkeyApply, $SupervisorScript)) {
+    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientExe, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $FormattingUpdater, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $PhysicalContextSignal, $HotkeyApply, $SupervisorScript, $StartupLauncher)) {
         if (-not (Test-Path -LiteralPath $Path)) {
             throw "Required path is missing: $Path"
         }
@@ -318,8 +319,8 @@ function Invoke-Run {
 function Register-StartupTask {
     Assert-Install
     $User = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" run' -f $SupervisorScript
-    $Action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $Arguments
+    $Arguments = '"{0}"' -f $StartupLauncher
+    $Action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $Arguments
     $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
     $Principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
     $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
