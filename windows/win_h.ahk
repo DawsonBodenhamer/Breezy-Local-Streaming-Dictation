@@ -28,6 +28,10 @@ PhysicalContextResetSignalPath := Runtime "\physical_context_reset.signal"
 PhysicalContextGenerationPath := Runtime "\physical_context.generation"
 PhysicalContextSequence := 0
 LastPhysicalIdle := A_TimeIdlePhysical
+CaretDisplacementSignalPath := Runtime "\caret_displacement.signal"
+CaretDisplacementSequence := 0
+LastKeyboardIdle := A_TimeIdleKeyboard
+CachedPhysicalContextGeneration := ""
 IdleIconPath := Runtime "\assets\dictation_idle.ico"
 RecordingIconPath := Runtime "\assets\dictation_recording.ico"
 LastRecordingState := -1
@@ -71,10 +75,14 @@ SetTimer(UpdateRecordingIcon, 150)
 
 Hotkey UserHotkey, HandleDictationHotkey
 ~*Enter::RecordManualLineBreak()
+~*LButton::RecordMouseCaretDisplacement()
+~*RButton::RecordMouseCaretDisplacement()
+~*MButton::RecordMouseCaretDisplacement()
 PublishHotkeyReady()
 if FileExist(HotkeyPendingPath)
     SetTimer(CheckHotkeyChangeResult, 250)
 SetTimer(DetectPhysicalContextReset, 15)
+SetTimer(DetectKeyboardCaretDisplacement, 15)
 
 DetectPhysicalContextReset(*) {
     global LastPhysicalIdle
@@ -94,6 +102,53 @@ RecordPhysicalContextReset() {
         nextSequence
     )
         PhysicalContextSequence := nextSequence
+}
+
+DetectKeyboardCaretDisplacement(*) {
+    global RecordingStatePath, LastKeyboardIdle
+    if !FileExist(RecordingStatePath) {
+        LastKeyboardIdle := A_TimeIdleKeyboard
+        return
+    }
+    currentIdle := A_TimeIdleKeyboard
+    if currentIdle < LastKeyboardIdle || (currentIdle = 0 && LastKeyboardIdle != 0)
+        RecordCaretDisplacement()
+    LastKeyboardIdle := currentIdle
+}
+
+RecordMouseCaretDisplacement(*) {
+    global RecordingStatePath
+    if !FileExist(RecordingStatePath)
+        return
+    RecordCaretDisplacement()
+}
+
+RecordCaretDisplacement() {
+    global CaretDisplacementSignalPath, PhysicalContextGenerationPath
+    global CaretDisplacementSequence, CachedPhysicalContextGeneration
+    if (CachedPhysicalContextGeneration = "")
+        CachedPhysicalContextGeneration := ReadPhysicalContextGeneration(PhysicalContextGenerationPath)
+    nextSequence := CaretDisplacementSequence + 1
+    if WriteCaretDisplacementSignal(
+        PhysicalContextGenerationPath,
+        CaretDisplacementSignalPath,
+        nextSequence,
+        CachedPhysicalContextGeneration
+    ) {
+        CaretDisplacementSequence := nextSequence
+        return
+    }
+    refreshed := ReadPhysicalContextGeneration(PhysicalContextGenerationPath)
+    if (refreshed != "" && refreshed != CachedPhysicalContextGeneration) {
+        CachedPhysicalContextGeneration := refreshed
+        if WriteCaretDisplacementSignal(
+            PhysicalContextGenerationPath,
+            CaretDisplacementSignalPath,
+            nextSequence,
+            CachedPhysicalContextGeneration
+        )
+            CaretDisplacementSequence := nextSequence
+    }
 }
 
 HandleDictationHotkey(*) {
@@ -522,10 +577,12 @@ OpenLogs(*) {
 
 UpdateRecordingIcon(*) {
     global RecordingStatePath, IdleIconPath, RecordingIconPath
-    global LastRecordingState
+    global LastRecordingState, CachedPhysicalContextGeneration
     recording := FileExist(RecordingStatePath) ? 1 : 0
     if recording = LastRecordingState
         return
+    if !recording
+        CachedPhysicalContextGeneration := ""
     iconPath := recording ? RecordingIconPath : IdleIconPath
     try TraySetIcon(iconPath)
     LastRecordingState := recording

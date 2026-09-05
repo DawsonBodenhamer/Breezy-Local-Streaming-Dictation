@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.6] - Unreleased
 
+### Fixed
+- **Preserved word spacing when moving the mouse**
+  - Moving your mouse, resting a hand on your desk, or scrolling during a pause while dictating in apps like IntelliJ, Antigravity, or Photoshop no longer causes your next words to stick to the previous word without a space (typing `helloworld` instead of `hello world`). Breezy now keeps your word spacing intact when the mouse simply moves or scrolls, while still cleanly starting fresh if you click somewhere new or type on your keyboard.
+
 ---
 
 ## [1.0.5] - 2026-09-03

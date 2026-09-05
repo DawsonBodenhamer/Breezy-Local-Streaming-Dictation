@@ -135,7 +135,7 @@ function Invoke-Uninstall {
     $ownedFiles = @(
         'client_bootstrap.pyw', 'config.toml', 'hotkey_apply.ps1', 'hotkey_capture.ahk',
         'hotkey.ready', 'hotkey_change.pending', 'hotkey_change.result.json',
-        'manual_line_break.signal', 'physical_context_reset.signal',
+        'manual_line_break.signal', 'physical_context_reset.signal', 'caret_displacement.signal',
         'physical_context.generation', 'client.ready', 'client_failed.flag',
         'formatting_config.py', 'list_microphones.py', 'runtime.env', 'startup_hidden.vbs', 'supervisor.ps1',
         'physical_context_signal.ahk', 'text_conversion_manager.py', 'win_h.ahk'

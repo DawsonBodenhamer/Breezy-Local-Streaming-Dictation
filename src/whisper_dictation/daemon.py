@@ -160,6 +160,51 @@ class PhysicalContextResetSignal:
         return sequence
 
 
+class CaretDisplacementSignal:
+    """Consume one content-free caret displacement event."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or _default_runtime_path("caret_displacement.signal")
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            log.debug("Caret displacement cleanup failed", exc_info=True)
+
+    def consume(self, *, generation: str, last_sequence: int) -> int | None:
+        """Return a new sequence, rejecting stale or malformed reset evidence."""
+        try:
+            value = self.path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            self.clear()
+            return None
+        finally:
+            self.clear()
+
+        fields = value.split("|")
+        if len(fields) != 2:
+            return None
+        recorded_generation, sequence_text = fields
+        if (
+            not recorded_generation
+            or "|" in recorded_generation
+            or not sequence_text.isdecimal()
+        ):
+            return None
+        try:
+            sequence = int(sequence_text)
+        except ValueError:
+            return None
+        if (
+            recorded_generation != generation
+            or not 0 < sequence <= _MAX_TICK_COUNT_MS
+            or sequence <= last_sequence
+        ):
+            return None
+        return sequence
+
+
 @dataclass
 class TargetInjectionSession:
     """Committed fallback state bound to one foreground window session."""
@@ -641,6 +686,8 @@ class DictationDaemon:
         self._physical_context_reset_signal = PhysicalContextResetSignal()
         self._physical_context_generation = ""
         self._physical_context_last_sequence = 0
+        self._caret_displacement_signal = CaretDisplacementSignal()
+        self._caret_displacement_last_sequence = 0
         self._target_injection_session: TargetInjectionSession | None = None
         self._number_normalizer = StreamingNumberNormalizer()
         self._number_lock = threading.Lock()
@@ -887,8 +934,19 @@ class DictationDaemon:
             return False
         with self._lock:
             self._physical_context_last_sequence = sequence
-            self._target_injection_session = None
         self._reset_repetition_state("physical_context_reset")
+        return True
+
+    def _consume_caret_displacement(self) -> bool:
+        sequence = self._caret_displacement_signal.consume(
+            generation=self._physical_context_generation,
+            last_sequence=self._caret_displacement_last_sequence,
+        )
+        if sequence is None:
+            return False
+        with self._lock:
+            self._caret_displacement_last_sequence = sequence
+            self._target_injection_session = None
         return True
 
     def _reset_repetition_state(self, reason: str) -> None:
@@ -944,6 +1002,7 @@ class DictationDaemon:
     def _resolve_injection_context(self, context: CaretContext) -> CaretContext:
         """Consume physical resets and resolve one target-bound injection session."""
         self._consume_physical_context_reset()
+        self._consume_caret_displacement()
         window_key = self._window_session_key(context.target)
         with self._lock:
             session = self._target_injection_session
@@ -1022,6 +1081,8 @@ class DictationDaemon:
     def _finalize_recording_boundaries(self) -> None:
         """Clear manual and target-session state after queued final output."""
         self._manual_line_break_signal.clear()
+        self._caret_displacement_signal.clear()
+        self._caret_displacement_last_sequence = 0
         with self._lock:
             self._target_injection_session = None
             self._pending_spoken_boundary = "none"
@@ -1054,6 +1115,8 @@ class DictationDaemon:
             self._physical_context_generation = generation
             self._physical_context_last_sequence = 0
             self._physical_context_reset_signal.clear()
+            self._caret_displacement_last_sequence = 0
+            self._caret_displacement_signal.clear()
             with self._lock:
                 self._target_injection_session = None
         except OSError:
@@ -1811,6 +1874,8 @@ class DictationDaemon:
                 )
                 return
             self._manual_line_break_signal.clear()
+            self._caret_displacement_signal.clear()
+            self._caret_displacement_last_sequence = 0
             self._target_injection_session = None
             self._recording = True
             try:
