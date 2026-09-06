@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.7] - Unreleased
 
+### Fixed
+- **Resilient background startup and failure logging**
+  - If a system cleaner, antivirus false alarm, or interrupted update ever damages the command-line helper, Breezy now automatically falls back to starting dictation directly rather than failing to launch on startup. Any missing startup files are also now recorded directly to the supervisor log instead of failing silently.
+
 ---
 
 ## [1.0.6] - 2026-09-05

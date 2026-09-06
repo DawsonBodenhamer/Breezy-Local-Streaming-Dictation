@@ -71,11 +71,27 @@ function Write-SupervisorLog {
     Add-Content -LiteralPath $SupervisorLog -Encoding utf8 -Value ("{0:o} {1}" -f (Get-Date), $Message)
 }
 
+function Invoke-ClientCli {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    if (Test-Path -LiteralPath $ClientExe) {
+        & $ClientExe @Arguments
+    } else {
+        & $Python -m whisper_dictation.cli @Arguments
+    }
+}
+
 function Assert-Install {
-    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientExe, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $FormattingUpdater, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $PhysicalContextSignal, $HotkeyApply, $SupervisorScript, $StartupLauncher)) {
+    foreach ($Path in @($Python, $Pythonw, $ManagerPythonw, $ClientBootstrap, $MicrophoneLister, $ManagerScript, $FormattingUpdater, $Config, $AutoHotkey, $HotkeyScript, $HotkeyCapture, $PhysicalContextSignal, $HotkeyApply, $SupervisorScript, $StartupLauncher)) {
         if (-not (Test-Path -LiteralPath $Path)) {
             throw "Required path is missing: $Path"
         }
+    }
+    if (-not (Test-Path -LiteralPath $ClientExe)) {
+        $ModuleCheck = & $Python -c "import whisper_dictation" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Neither $ClientExe nor importable whisper_dictation package is available: $ModuleCheck"
+        }
+        Write-SupervisorLog "Warning: $ClientExe is missing; using python -m whisper_dictation.cli fallback."
     }
 }
 
@@ -147,7 +163,7 @@ function Get-SupervisedClientProcess {
     if ($null -eq $Existing) {
         return $null
     }
-    $Status = (& $ClientExe status 2>&1) -join "`n"
+    $Status = (Invoke-ClientCli status 2>&1) -join "`n"
     if ($Status -notmatch 'Status:\s+running\s+\(PID\s+(\d+)\)') {
         return $null
     }
@@ -186,7 +202,13 @@ function Stop-OwnedProcess {
 }
 
 function Invoke-Run {
-    Assert-Install
+    try {
+        Assert-Install
+    }
+    catch {
+        Write-SupervisorLog "Startup preflight assertion failed: $($_.Exception.Message)"
+        throw
+    }
     if (Test-Path -LiteralPath $DisabledFile) {
         Write-SupervisorLog 'Startup skipped because dictation is disabled.'
         return
@@ -294,7 +316,7 @@ function Invoke-Run {
         if ($null -ne $Client) {
             try {
                 Initialize-EnginePath
-                & $ClientExe stop 2>&1 | ForEach-Object { Write-SupervisorLog "Client stop: $_" }
+                Invoke-ClientCli stop 2>&1 | ForEach-Object { Write-SupervisorLog "Client stop: $_" }
             }
             catch {
                 Write-SupervisorLog "Client stop command failed: $($_.Exception.Message)"
@@ -390,7 +412,7 @@ function Show-Status {
     Write-Output "Client state: $(if (Test-Path -LiteralPath $ClientFailedFile) { 'failed' } elseif (Test-Path -LiteralPath $ClientReadyFile) { 'ready' } else { 'loading' })"
     Write-Output "Config: $Config"
     Write-Output "Log: $SupervisorLog"
-    & $ClientExe status
+    Invoke-ClientCli status
 }
 
 function Pause-Client {
@@ -414,7 +436,7 @@ function Pause-Client {
     }
     Initialize-EnginePath
     try {
-        & $ClientExe stop 2>&1 | ForEach-Object { Write-SupervisorLog "Pause client stop: $_" }
+        Invoke-ClientCli stop 2>&1 | ForEach-Object { Write-SupervisorLog "Pause client stop: $_" }
     }
     catch {
         Write-SupervisorLog "Pause client stop command failed: $($_.Exception.Message)"
@@ -473,7 +495,7 @@ function Test-HotkeyHealth {
     if ($null -eq (Get-LiveSupervisorPid)) { return $false }
     if (-not (Test-Path -LiteralPath $HotkeyReadyFile -PathType Leaf)) { return $false }
     if ((Get-Content -LiteralPath $HotkeyReadyFile -Raw -Encoding utf8).Trim() -ne $HotkeyBinding) { return $false }
-    $status = (& $ClientExe status 2>&1) -join "`n"
+    $status = (Invoke-ClientCli status 2>&1) -join "`n"
     return $status -match 'Status:\s+running\s+\(PID\s+\d+\)'
 }
 
@@ -501,7 +523,7 @@ switch ($Command) {
         Unregister-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Confirm:$false -ErrorAction SilentlyContinue
         Write-Output "Removed scheduled task: $TaskName"
     }
-    'devices' { & $ClientExe devices }
+    'devices' { Invoke-ClientCli devices }
     'tray-devices' { & $Python $MicrophoneLister }
     'set-microphone' { Set-Microphone }
     'set-automatic-punctuation' { Set-FormattingValue -Key 'automatic_punctuation' }
@@ -518,3 +540,4 @@ switch ($Command) {
         Start-Supervisor
     }
 }
+
