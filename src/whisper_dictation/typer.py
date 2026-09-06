@@ -13,12 +13,12 @@ log = logging.getLogger(__name__)
 _typing_lock = threading.Lock()
 
 
-def _target_identity(target: FocusedControlDiagnostic) -> tuple[str, str] | None:
+def _target_identity(target: FocusedControlDiagnostic) -> tuple[str, str, int] | None:
     executable = target.foreground_executable.strip().casefold()
     window_class = target.foreground_window_class.strip().casefold()
     if not executable or not window_class:
         return None
-    return executable, window_class
+    return executable, window_class, target.top_level_hwnd
 
 
 def _is_modern_notepad_window(target: FocusedControlDiagnostic) -> bool:
@@ -103,7 +103,9 @@ def _replace_windows_notepad_selection(
 
 
 def _type_windows(text: str) -> None:
-    """Type Unicode text in one Win32 SendInput batch."""
+    if sys.platform != "win32":
+        return
+
     import ctypes
     from ctypes import wintypes
 
@@ -152,7 +154,7 @@ def _type_windows(text: str) -> None:
 
     utf16 = text.encode("utf-16-le", errors="surrogatepass")
     code_units = [
-        int.from_bytes(utf16[index:index + 2], "little")
+        int.from_bytes(utf16[index : index + 2], "little")
         for index in range(0, len(utf16), 2)
     ]
     inputs = (Input * (len(code_units) * 2))()
@@ -179,6 +181,83 @@ def _type_windows(text: str) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
+def _send_virtual_key_windows(vk_code: int) -> None:
+    """Send one virtual key-down/key-up event pair via SendInput."""
+    if sys.platform != "win32":
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    input_keyboard = 1
+    keyeventf_keyup = 0x0002
+    ulong_ptr = wintypes.WPARAM
+
+    class KeyboardInput(ctypes.Structure):
+        _fields_ = [
+            ("wVk", wintypes.WORD),
+            ("wScan", wintypes.WORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ulong_ptr),
+        ]
+
+    class MouseInput(ctypes.Structure):
+        _fields_ = [
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ulong_ptr),
+        ]
+
+    class HardwareInput(ctypes.Structure):
+        _fields_ = [
+            ("uMsg", wintypes.DWORD),
+            ("wParamL", wintypes.WORD),
+            ("wParamH", wintypes.WORD),
+        ]
+
+    class InputUnion(ctypes.Union):
+        _fields_ = [
+            ("mi", MouseInput),
+            ("ki", KeyboardInput),
+            ("hi", HardwareInput),
+        ]
+
+    class Input(ctypes.Structure):
+        _anonymous_ = ("union",)
+        _fields_ = [("type", wintypes.DWORD), ("union", InputUnion)]
+
+    inputs = (Input * 2)()
+    inputs[0] = Input(
+        type=input_keyboard,
+        ki=KeyboardInput(vk_code, 0, 0, 0, 0),
+    )
+    inputs[1] = Input(
+        type=input_keyboard,
+        ki=KeyboardInput(vk_code, 0, keyeventf_keyup, 0, 0),
+    )
+
+    user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int)
+    user32.SendInput.restype = wintypes.UINT
+    sent = user32.SendInput(len(inputs), inputs, ctypes.sizeof(Input))
+    if sent != len(inputs):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _backspace_windows() -> None:
+    """Send one VK_BACK key-down/key-up event pair via SendInput."""
+    _send_virtual_key_windows(0x08)
+
+
+def _spacebar_windows() -> None:
+    """Send one VK_SPACE key-down/key-up event pair via SendInput."""
+    _send_virtual_key_windows(0x20)
+
+
 def type_text(
     text: str,
     expected_target: FocusedControlDiagnostic | None = None,
@@ -203,6 +282,15 @@ def type_text(
             )
             current_notepad = _is_modern_notepad_window(current_target)
             if expected_notepad:
+                if (
+                    expected_target.top_level_hwnd > 0
+                    and current_target.top_level_hwnd > 0
+                    and current_target.top_level_hwnd != expected_target.top_level_hwnd
+                ):
+                    raise RuntimeError(
+                        "Focused application identity is unavailable or changed "
+                        "before text injection"
+                    )
                 if (
                     not _is_exact_writable_notepad_control(current_target)
                     or current_target.native_window_handle
@@ -260,6 +348,152 @@ def type_text(
             log.info(
                 "Injection phases: safety_snapshot_ms=%.1f dispatch_ms=%.1f "
                 "path=sendinput",
+                safety_ms,
+                (time.monotonic() - dispatch_started) * 1000.0,
+            )
+        else:
+            raise RuntimeError(f"Unsupported platform: {sys.platform}")
+
+
+def send_backspace(
+    expected_target: FocusedControlDiagnostic | None = None,
+) -> None:
+    """Dispatch one native Backspace keypress under safety lock."""
+    with _typing_lock:
+        if sys.platform == "win32":
+            safety_started = time.monotonic()
+            current_target = get_focused_control_diagnostic(
+                collect_ancestors=False
+            )
+            safety_ms = (time.monotonic() - safety_started) * 1000.0
+            expected_notepad = (
+                expected_target is not None
+                and _is_modern_notepad_window(expected_target)
+            )
+            current_notepad = _is_modern_notepad_window(current_target)
+            if expected_notepad:
+                if (
+                    expected_target.top_level_hwnd > 0
+                    and current_target.top_level_hwnd > 0
+                    and current_target.top_level_hwnd != expected_target.top_level_hwnd
+                ):
+                    raise RuntimeError(
+                        "Focused application identity is unavailable or changed "
+                        "before key action dispatch"
+                    )
+                if (
+                    not _is_exact_writable_notepad_control(current_target)
+                    or current_target.native_window_handle
+                    != expected_target.native_window_handle
+                ):
+                    raise RuntimeError(
+                        "Focused Notepad control changed before key action dispatch"
+                    )
+            elif current_notepad and (
+                not _is_exact_writable_notepad_control(current_target)
+            ):
+                raise RuntimeError(
+                    "Focused application changed to non-writable Notepad "
+                    "before key action dispatch"
+                )
+            expected_identity = (
+                _target_identity(expected_target)
+                if expected_target is not None
+                else None
+            )
+            current_identity = _target_identity(current_target)
+            if expected_target is not None and (
+                expected_identity is None
+                or current_identity is None
+                or expected_identity != current_identity
+            ):
+                raise RuntimeError(
+                    "Focused application identity is unavailable or changed "
+                    "before key action dispatch"
+                )
+            dispatch_started = time.monotonic()
+            _backspace_windows()
+            log.info(
+                "Key action phases: safety_snapshot_ms=%.1f dispatch_ms=%.1f "
+                "action=backspace",
+                safety_ms,
+                (time.monotonic() - dispatch_started) * 1000.0,
+            )
+        else:
+            raise RuntimeError(f"Unsupported platform: {sys.platform}")
+
+
+def send_spacebar(
+    expected_target: FocusedControlDiagnostic | None = None,
+) -> None:
+    """Dispatch one spacebar action under safety lock."""
+    with _typing_lock:
+        if sys.platform == "win32":
+            safety_started = time.monotonic()
+            current_target = get_focused_control_diagnostic(
+                collect_ancestors=False
+            )
+            safety_ms = (time.monotonic() - safety_started) * 1000.0
+            expected_notepad = (
+                expected_target is not None
+                and _is_modern_notepad_window(expected_target)
+            )
+            current_notepad = _is_modern_notepad_window(current_target)
+            if expected_notepad:
+                if (
+                    expected_target.top_level_hwnd > 0
+                    and current_target.top_level_hwnd > 0
+                    and current_target.top_level_hwnd != expected_target.top_level_hwnd
+                ):
+                    raise RuntimeError(
+                        "Focused application identity is unavailable or changed "
+                        "before key action dispatch"
+                    )
+                if (
+                    not _is_exact_writable_notepad_control(current_target)
+                    or current_target.native_window_handle
+                    != expected_target.native_window_handle
+                ):
+                    raise RuntimeError(
+                        "Focused Notepad control changed before key action dispatch"
+                    )
+                dispatch_started = time.monotonic()
+                if not _replace_windows_notepad_selection(" ", current_target):
+                    raise RuntimeError("Focused Notepad native replacement failed")
+                log.info(
+                    "Key action phases: safety_snapshot_ms=%.1f dispatch_ms=%.1f "
+                    "action=spacebar path=notepad",
+                    safety_ms,
+                    (time.monotonic() - dispatch_started) * 1000.0,
+                )
+                return
+            elif current_notepad and (
+                not _is_exact_writable_notepad_control(current_target)
+            ):
+                raise RuntimeError(
+                    "Focused application changed to non-writable Notepad "
+                    "before key action dispatch"
+                )
+            expected_identity = (
+                _target_identity(expected_target)
+                if expected_target is not None
+                else None
+            )
+            current_identity = _target_identity(current_target)
+            if expected_target is not None and (
+                expected_identity is None
+                or current_identity is None
+                or expected_identity != current_identity
+            ):
+                raise RuntimeError(
+                    "Focused application identity is unavailable or changed "
+                    "before key action dispatch"
+                )
+            dispatch_started = time.monotonic()
+            _spacebar_windows()
+            log.info(
+                "Key action phases: safety_snapshot_ms=%.1f dispatch_ms=%.1f "
+                "action=spacebar",
                 safety_ms,
                 (time.monotonic() - dispatch_started) * 1000.0,
             )

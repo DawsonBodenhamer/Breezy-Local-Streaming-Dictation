@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import PureWindowsPath
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class FocusedControlDiagnostic:
     is_offscreen: bool | None = None
     read_only: bool | None = None
     native_window_handle: int = 0
+    top_level_hwnd: int = 0
     text_pattern: bool = False
     value_pattern: bool = False
     ancestor_classes: tuple[str, ...] = ()
@@ -56,6 +58,7 @@ class FocusedControlDiagnostic:
             "is_offscreen": self.is_offscreen,
             "read_only": self.read_only,
             "native_window_handle": self.native_window_handle,
+            "top_level_hwnd": self.top_level_hwnd,
             "text_pattern": self.text_pattern,
             "value_pattern": self.value_pattern,
             "ancestor_classes": list(self.ancestor_classes),
@@ -199,10 +202,10 @@ def is_empty_casing_context(
     )
 
 
-def _foreground_target_identity() -> tuple[str, str]:
-    """Return foreground executable and top-level window class on Windows."""
+def _foreground_target_binding() -> tuple[str, str, int]:
+    """Return foreground executable, top-level window class, and top-level HWND on Windows."""
     if sys.platform != "win32":
-        return "", ""
+        return "", "", 0
 
     import ctypes
     from ctypes import wintypes
@@ -241,17 +244,17 @@ def _foreground_target_identity() -> tuple[str, str]:
 
     window = user32.GetForegroundWindow()
     if not window:
-        return "", ""
+        return "", "", 0
     process_id = wintypes.DWORD()
     if not user32.GetWindowThreadProcessId(window, ctypes.byref(process_id)):
-        return "", ""
+        return "", "", 0
     window_class = ctypes.create_unicode_buffer(256)
     if not user32.GetClassNameW(
         window,
         window_class,
         len(window_class),
     ):
-        return "", ""
+        return "", "", 0
 
     process = kernel32.OpenProcess(
         process_query_limited_information,
@@ -259,7 +262,7 @@ def _foreground_target_identity() -> tuple[str, str]:
         process_id.value,
     )
     if not process:
-        return "", ""
+        return "", "", 0
     try:
         capacity = wintypes.DWORD(32768)
         path = ctypes.create_unicode_buffer(capacity.value)
@@ -269,13 +272,36 @@ def _foreground_target_identity() -> tuple[str, str]:
             path,
             ctypes.byref(capacity),
         ):
-            return "", ""
+            return "", "", 0
         return (
             PureWindowsPath(path.value).name.casefold(),
             window_class.value.casefold(),
+            int(window),
         )
     finally:
         kernel32.CloseHandle(process)
+
+
+def _foreground_target_identity() -> tuple[str, str]:
+    """Return foreground executable and top-level window class on Windows."""
+    binding = _foreground_target_binding()
+    return binding[0], binding[1]
+
+
+def foreground_target_binding() -> tuple[str, str, int] | None:
+    """Return the foreground (executable, window class, HWND) without UI Automation."""
+    executable, window_class, hwnd = _foreground_target_binding()
+    if not executable or not window_class:
+        return None
+    return executable, window_class, hwnd
+
+
+def foreground_target_identity() -> tuple[str, str] | None:
+    """Return the foreground (executable, window class) without UI Automation."""
+    executable, window_class = _foreground_target_identity()
+    if not executable or not window_class:
+        return None
+    return executable, window_class
 
 
 def _get_pattern(control: Any, pattern_id: int) -> Any | None:
@@ -302,6 +328,7 @@ def _focused_control_diagnostic(
     text_pattern: Any | None = None,
     value_pattern: Any | None = None,
     collect_ancestors: bool = True,
+    top_level_hwnd: int = 0,
 ) -> FocusedControlDiagnostic:
     control_type = None
     try:
@@ -367,6 +394,7 @@ def _focused_control_diagnostic(
         is_offscreen=control_bool("IsOffscreen"),
         read_only=read_only,
         native_window_handle=native_window_handle,
+        top_level_hwnd=top_level_hwnd,
         text_pattern=text_pattern is not None,
         value_pattern=value_pattern is not None,
         ancestor_classes=tuple(ancestor_classes),
@@ -380,9 +408,8 @@ def get_focused_control_diagnostic(
 
     Ancestry collection is needed only by the Photoshop layer-name
     discriminator; callers that never read ancestor classes pass
-    ``collect_ancestors=False`` to skip the parent walk entirely.
-    """
-    executable_name, window_class = _foreground_target_identity()
+    ``collect_ancestors=False`` to skip the parent walk entirely."""
+    executable_name, window_class, top_level_hwnd = _foreground_target_binding()
     try:
         import uiautomation as auto
 
@@ -392,6 +419,7 @@ def get_focused_control_diagnostic(
                 return FocusedControlDiagnostic(
                     foreground_executable=executable_name,
                     foreground_window_class=window_class,
+                    top_level_hwnd=top_level_hwnd,
                     error="no_focused_control",
                 )
             text_pattern = _get_pattern(control, auto.PatternId.TextPattern)
@@ -404,22 +432,16 @@ def get_focused_control_diagnostic(
                 text_pattern,
                 value_pattern,
                 collect_ancestors=collect_ancestors,
+                top_level_hwnd=top_level_hwnd,
             )
     except Exception as exc:
         log.debug("Focused-control diagnostic failed", exc_info=True)
         return FocusedControlDiagnostic(
             foreground_executable=executable_name,
             foreground_window_class=window_class,
+            top_level_hwnd=top_level_hwnd,
             error=type(exc).__name__,
         )
-
-
-def foreground_target_identity() -> tuple[str, str] | None:
-    """Return the foreground (executable, window class) without UI Automation."""
-    executable, window_class = _foreground_target_identity()
-    if not executable or not window_class:
-        return None
-    return executable, window_class
 
 
 def _is_focused_writable_edit_control(control: Any, auto: Any) -> bool:
@@ -540,9 +562,8 @@ def get_caret_context() -> CaretContext:
     """Inspect focused UIA text without moving the caret or selection.
 
     Unsupported controls and probe failures return an unavailable context so the
-    caller can retain its established conservative fallback.
-    """
-    executable_name, window_class = _foreground_target_identity()
+    caller can retain its established conservative fallback."""
+    executable_name, window_class, top_level_hwnd = _foreground_target_binding()
     try:
         import uiautomation as auto
 
@@ -557,6 +578,7 @@ def get_caret_context() -> CaretContext:
                     target=FocusedControlDiagnostic(
                         foreground_executable=executable_name,
                         foreground_window_class=window_class,
+                        top_level_hwnd=top_level_hwnd,
                     ),
                 )
 
@@ -569,6 +591,7 @@ def get_caret_context() -> CaretContext:
                 window_class,
                 pattern,
                 value_pattern,
+                top_level_hwnd=top_level_hwnd,
             )
             if pattern is None and value_pattern is not None:
                 context = _value_pattern_context(control, value_pattern)
@@ -594,7 +617,7 @@ def get_caret_context() -> CaretContext:
 
             selections = pattern.GetSelection()
             if len(selections) != 1:
-                return CaretContext()
+                return CaretContext(target=target)
             selection = selections[0]
             selection_text = selection.GetText(-1)
             if bool(
@@ -602,7 +625,7 @@ def get_caret_context() -> CaretContext:
                     auto.TextAttributeId.IsReadOnlyAttribute,
                 )
             ):
-                return CaretContext()
+                return CaretContext(target=target)
 
             document_text = pattern.DocumentRange.GetText(-1)
             line = selection.Clone()
@@ -661,8 +684,77 @@ def get_caret_context() -> CaretContext:
             target=FocusedControlDiagnostic(
                 foreground_executable=executable_name,
                 foreground_window_class=window_class,
+                top_level_hwnd=top_level_hwnd,
             ),
         )
+
+
+@dataclass(frozen=True)
+class TargetAcquisitionResult:
+    """Diagnostic outcome of stable focus acquisition across window transitions."""
+
+    context: CaretContext
+    attempts: int
+    stability_reason: str
+
+
+def acquire_stable_caret_context(
+    *,
+    probe_fn: Callable[[], CaretContext] = get_caret_context,
+    binding_fn: Callable[[], tuple[str, str, int]] = _foreground_target_binding,
+    max_retries: int = 2,
+    backoff_delays: tuple[float, ...] = (0.025, 0.050),
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> TargetAcquisitionResult:
+    """Acquire a stable focus context with bounded retry across window switches.
+
+    Binds each probe to the foreground executable, top-level window class,
+    and top-level HWND sampled around the UI Automation query. If the first
+    probe is valid and stable, accepts immediately with zero retry delay.
+    If denied or unstable, retries at most two times (capped at 75 ms total).
+    """
+    total_attempts = 1 + max_retries
+    last_context = CaretContext()
+    last_reason = "denied"
+    completed_attempts = 0
+
+    for attempt in range(1, total_attempts + 1):
+        before_binding = binding_fn()
+        try:
+            context = probe_fn()
+        except StopIteration:
+            break
+        completed_attempts = attempt
+        after_binding = binding_fn()
+        last_context = context
+
+        window_changed = (
+            before_binding != after_binding
+            if (before_binding[2] > 0 or after_binding[2] > 0)
+            else False
+        )
+
+        if window_changed:
+            last_reason = "window_changed"
+        elif not context.injection_allowed:
+            last_reason = "denied"
+        else:
+            return TargetAcquisitionResult(
+                context=context,
+                attempts=attempt,
+                stability_reason="stable",
+            )
+
+        if attempt < total_attempts:
+            delay = backoff_delays[attempt - 1] if attempt - 1 < len(backoff_delays) else 0.0
+            if delay > 0.0:
+                sleep_fn(delay)
+
+    return TargetAcquisitionResult(
+        context=last_context,
+        attempts=completed_attempts or total_attempts,
+        stability_reason=last_reason,
+    )
 
 
 def should_capitalize_at_caret() -> bool:

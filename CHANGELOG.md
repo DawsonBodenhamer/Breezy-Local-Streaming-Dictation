@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.7] - Unreleased
 
+### Added
+- **The `spacebar` voice command**
+  - Saying `spacebar` now presses the Spacebar key once to insert a space regardless of what the content looks like around the caret or whether automatic spacing is suppressed. Repeated commands insert additional spaces, while natural phrases containing the word (like "the spacebar" or "spacebar key") remain plain dictated text.
+- **The `backspace` voice command**
+  - Saying `backspace` now natively presses the Backspace key once to erase the preceding character without typing out the word "backspace". Repeated commands delete additional characters, while natural phrases containing the word (like "press backspace") remain plain dictated text.
+
 ### Fixed
+- **Preserved first utterance after switching windows**
+  - Switching to a new window (like Brave, an editor, or a terminal) and speaking immediately no longer loses the first utterance due to transient focus latency during the application transition. Breezy now reliably acquires stable focus before evaluating injection.
 - **Resilient background startup and failure logging**
   - If a system cleaner, antivirus false alarm, or interrupted update ever damages the command-line helper, Breezy now automatically falls back to starting dictation directly rather than failing to launch on startup. Any missing startup files are also now recorded directly to the supervisor log instead of failing silently.
 

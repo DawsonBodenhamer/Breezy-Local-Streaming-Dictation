@@ -120,6 +120,14 @@ Examples below start on a fresh line, with the default capitalization choices on
       <td><code>open parenthesis pork close parenthesis</code></td>
       <td><code>(pork)</code></td>
     </tr>
+    <tr>
+      <td><code>spacebar</code></td>
+      <td>Presses the Spacebar key once to insert a space regardless of surrounding context</td>
+    </tr>
+    <tr>
+      <td><code>backspace</code></td>
+      <td>Presses the Backspace key once to erase the previous character</td>
+    </tr>
   </tbody>
 </table>
 
@@ -138,6 +146,14 @@ Say `capital` before a word to give just that one word a capital letter: `capita
 This works anywhere — mid-sentence, after a new line, or at the start of a fresh paragraph — and it ignores the Capitalization choices in the tray menu, which only decide whether new paragraphs and new lines start capitalized on their own. Like the caps modes, `capital` expires on its own if you stop speaking for two seconds before saying the word.
 
 One exception keeps normal speech flowing: in `the capital of France`, the word `capital` is just the word, so Breezy types `the capital of France` exactly as you said it.
+
+### Insert a space
+
+Say `spacebar` by itself to press the Spacebar key once and insert a single space regardless of what characters surround the caret. Saying `spacebar` repeatedly inserts additional spaces. Phrases that contain the word (like `the spacebar` or `spacebar key`) type as normal text.
+
+### Erase text
+
+Say `backspace` by itself to press the Backspace key once and delete the preceding character without typing the word. Saying `backspace` repeatedly deletes additional characters. Phrases that contain the word (like `press backspace`) type as normal text.
 
 ## Everyday controls
 

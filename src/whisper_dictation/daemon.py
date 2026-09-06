@@ -12,7 +12,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -20,7 +20,11 @@ from .audio import AudioStream
 from .caret_context import (
     CaretContext,
     FocusedControlDiagnostic,
+    TargetAcquisitionResult,
+    _foreground_target_binding,
+    acquire_stable_caret_context,
     classify_casing_context,
+    foreground_target_binding,
     foreground_target_identity,
     get_caret_context,
     is_allowlisted_unavailable_context_target,
@@ -42,7 +46,7 @@ from .engine.local import (
 )
 from .hotkey import HotkeyListener
 from .notifier import notify
-from .typer import type_text
+from .typer import send_backspace, send_spacebar, type_text
 from .vad import SpeechDetector
 
 if TYPE_CHECKING:
@@ -53,14 +57,14 @@ log = logging.getLogger(__name__)
 _MAX_TICK_COUNT_MS = 2**64 - 1
 
 
-def _target_identity(target: FocusedControlDiagnostic | None) -> tuple[str, str] | None:
+def _target_identity(target: FocusedControlDiagnostic | None) -> tuple[str, str, int] | None:
     if not isinstance(target, FocusedControlDiagnostic):
         return None
     executable = target.foreground_executable.strip().casefold()
     window_class = target.foreground_window_class.strip().casefold()
     if not executable or not window_class:
         return None
-    return executable, window_class
+    return executable, window_class, target.top_level_hwnd
 
 
 def _default_runtime_path(filename: str) -> Path:
@@ -272,23 +276,188 @@ _TARGET_IDENTITY_UNBOUND = object()
 # One categorical outcome is recorded for every recognized utterance; the
 # category values are privacy-safe and never carry dictated or document text.
 OUTCOME_INJECTED = "injected"
+OUTCOME_ACTION_EXECUTED = "action_executed"
 OUTCOME_FOCUS_REJECTED = "focus_rejected"
 OUTCOME_FOCUS_CHANGED = "focus_changed"
 OUTCOME_REPEAT_SUPPRESSED = "repeat_suppressed"
 OUTCOME_EMPTY_RECOGNITION = "empty_recognition"
 OUTCOME_FORMATTING_APPLIED = "formatting_applied"
 OUTCOME_TYPING_FAILURE = "typing_failure"
+OUTCOME_DISPATCH_FAILURE = "dispatch_failure"
 OUTCOME_VAD_SHORT_REJECTED = "vad_short_rejected"
 _RECORDING_OUTCOME_ORDER = (
     OUTCOME_INJECTED,
+    OUTCOME_ACTION_EXECUTED,
     OUTCOME_FOCUS_REJECTED,
     OUTCOME_FOCUS_CHANGED,
     OUTCOME_REPEAT_SUPPRESSED,
     OUTCOME_EMPTY_RECOGNITION,
     OUTCOME_FORMATTING_APPLIED,
     OUTCOME_TYPING_FAILURE,
+    OUTCOME_DISPATCH_FAILURE,
     OUTCOME_VAD_SHORT_REJECTED,
 )
+
+_SPOKEN_ACTION_TERMINAL_PUNCTUATION = ".,!?;:…"
+
+
+@dataclass(frozen=True)
+class SpokenSegment:
+    """Segment of transcription: either plain dictation text or a spoken action."""
+
+    kind: str  # "text" | "action"
+    text: str = ""
+    action: str = ""
+    count: int = 1
+
+
+class SpokenAction(str):
+    """Spoken action token with repetition count and optional leading text."""
+
+    count: int
+    leading_text: str
+
+    def __new__(cls, action: str, count: int = 1, leading_text: str = ""):
+        obj = super().__new__(cls, action)
+        obj.count = count
+        obj.leading_text = leading_text
+        return obj
+
+
+_BACKSPACE_TOKEN_PATTERN = r"\b(?:back-?space|back\s+space|backslace|back\s+slace)\b"
+_SPACEBAR_TOKEN_PATTERN = r"\b(?:space-?bar|space\s+bar)\b"
+
+_BACKSPACE_TOKEN_RE = re.compile(_BACKSPACE_TOKEN_PATTERN, re.IGNORECASE)
+_SPACEBAR_TOKEN_RE = re.compile(_SPACEBAR_TOKEN_PATTERN, re.IGNORECASE)
+
+_ANY_ACTION_TOKEN = re.compile(
+    rf"(?P<bs>{_BACKSPACE_TOKEN_PATTERN})|(?P<sb>{_SPACEBAR_TOKEN_PATTERN})",
+    re.IGNORECASE,
+)
+
+_ACTION_CHAIN = re.compile(
+    rf"(?:"
+    rf"(?:{_BACKSPACE_TOKEN_PATTERN}|{_SPACEBAR_TOKEN_PATTERN})"
+    rf"[\s{_SPOKEN_ACTION_TERMINAL_PUNCTUATION}]*"
+    rf")+",
+    re.IGNORECASE,
+)
+
+_PROSE_PATTERNS = (
+    re.compile(
+        rf"\b(?:the|a|an|press|hit|use|hold|touch|click)\s+(?:the\s+)?(?:{_BACKSPACE_TOKEN_PATTERN}|{_SPACEBAR_TOKEN_PATTERN})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:{_BACKSPACE_TOKEN_PATTERN}|{_SPACEBAR_TOKEN_PATTERN})\s+(?:key|button|bar)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:{_BACKSPACE_TOKEN_PATTERN}|{_SPACEBAR_TOKEN_PATTERN})\s+please\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _is_prose_protected(text: str, start: int, end: int) -> bool:
+    """Return True if the match range falls inside a prose phrase."""
+    for pat in _PROSE_PATTERNS:
+        for m in pat.finditer(text):
+            if m.start() <= start and end <= m.end():
+                return True
+    return False
+
+
+def parse_spoken_segments(text: str) -> list[SpokenSegment]:
+    """Parse spoken actions interleaved with dictation text into sequential segments."""
+    trimmed = text.strip()
+    if not trimmed:
+        return []
+
+    chains: list[tuple[int, int]] = []
+    for m in _ACTION_CHAIN.finditer(trimmed):
+        start, end = m.start(), m.end()
+        if _is_prose_protected(trimmed, start, end):
+            continue
+        chains.append((start, end))
+
+    if not chains:
+        return [SpokenSegment(kind="text", text=trimmed)]
+
+    segments: list[SpokenSegment] = []
+    cursor = 0
+
+    for c_start, c_end in chains:
+        chain_str = trimmed[c_start:c_end]
+        tokens = list(_ANY_ACTION_TOKEN.finditer(chain_str))
+        if not tokens:
+            continue
+
+        first_tok = tokens[0]
+        is_first_bs = bool(first_tok.group("bs"))
+
+        if c_start > cursor:
+            preceding = trimmed[cursor:c_start].strip(" \t")
+            if preceding:
+                if is_first_bs:
+                    preceding = preceding.rstrip(_SPOKEN_ACTION_TERMINAL_PUNCTUATION).strip(" \t")
+                if preceding:
+                    segments.append(SpokenSegment(kind="text", text=preceding))
+
+        for tok in tokens:
+            action_name = "backspace" if tok.group("bs") else "spacebar"
+            if segments and segments[-1].kind == "action" and segments[-1].action == action_name:
+                segments[-1] = replace(segments[-1], count=segments[-1].count + 1)
+            else:
+                segments.append(SpokenSegment(kind="action", action=action_name, count=1))
+
+        cursor = c_end
+
+    if cursor < len(trimmed):
+        trailing = trimmed[cursor:].strip(" \t")
+        if trailing:
+            segments.append(SpokenSegment(kind="text", text=trailing))
+
+    return segments
+
+
+_REV109_BACKSPACE_TOKEN_RE = re.compile(r"\bback-?space\b", re.IGNORECASE)
+_REV109_BACKSPACE_SUFFIX_RE = re.compile(
+    rf"(?:\s*(?:\bback-?space\b)[{_SPOKEN_ACTION_TERMINAL_PUNCTUATION}]*)+$",
+    re.IGNORECASE,
+)
+_REV110_SPACEBAR_TOKEN_RE = re.compile(
+    r"\bspace-?bar\b|\bspace\s+bar\b", re.IGNORECASE
+)
+_REV110_SPACEBAR_SUFFIX_RE = re.compile(
+    rf"(?:\s*(?:\bspace-?bar\b|\bspace\s+bar\b)[{_SPOKEN_ACTION_TERMINAL_PUNCTUATION}]*)+$",
+    re.IGNORECASE,
+)
+
+
+def parse_spoken_action(text: str) -> SpokenAction | None:
+    """Parse complete spoken action commands before text normalization or formatting."""
+    trimmed = text.strip()
+    if not trimmed:
+        return None
+
+    m_bs = _REV109_BACKSPACE_SUFFIX_RE.search(trimmed)
+    if m_bs:
+        suffix = m_bs.group(0)
+        leading = trimmed[: m_bs.start()].rstrip()
+        count = len(_REV109_BACKSPACE_TOKEN_RE.findall(suffix))
+        if count >= 2 or (count == 1 and not leading):
+            return SpokenAction("backspace", count=count, leading_text=leading)
+
+    m_sb = _REV110_SPACEBAR_SUFFIX_RE.search(trimmed)
+    if m_sb:
+        suffix = m_sb.group(0)
+        leading = trimmed[: m_sb.start()].rstrip()
+        count = len(_REV110_SPACEBAR_TOKEN_RE.findall(suffix))
+        if count >= 2 or (count == 1 and not leading):
+            return SpokenAction("spacebar", count=count, leading_text=leading)
+
+    return None
 
 
 def _log_utterance_outcome(category: str, boundary: str, **phases: float) -> None:
@@ -301,13 +470,17 @@ def _log_utterance_outcome(category: str, boundary: str, **phases: float) -> Non
 
 
 def _target_binding_changed(
-    queued: tuple[str, str] | None | object,
-    current: tuple[str, str] | None,
+    queued: tuple[Any, ...] | None | object,
+    current: tuple[Any, ...] | None,
 ) -> bool:
     """Fail closed for an explicit binding that is missing or changed."""
     if queued is _TARGET_IDENTITY_UNBOUND:
         return False
-    return queued is None or current is None or current != queued
+    if queued is None or current is None:
+        return True
+    if len(queued) == 2 and len(current) >= 2:
+        return current[:2] != queued
+    return current != queued
 
 
 class SessionEmissionHistory:
@@ -392,12 +565,18 @@ def _notify_pathological_decoder_output(
     )
 
 
-def _log_focus_rejection(context: CaretContext, boundary: str) -> None:
+def _log_focus_rejection(
+    context: CaretContext,
+    boundary: str,
+    *,
+    attempts: int = 1,
+    stability_reason: str = "denied",
+) -> None:
     target = context.target
     log.info(
         "Focus rejection: boundary=%s executable=%s window_class=%s "
         "control_type=%s class_name=%s automation_id=%s ancestors=%s "
-        "text_pattern=%s value_pattern=%s error=%s",
+        "text_pattern=%s value_pattern=%s error=%s attempts=%d stability_reason=%s",
         boundary,
         target.foreground_executable if target else "",
         target.foreground_window_class if target else "",
@@ -408,6 +587,8 @@ def _log_focus_rejection(context: CaretContext, boundary: str) -> None:
         target.text_pattern if target else False,
         target.value_pattern if target else False,
         target.error if target else "no_diagnostic",
+        attempts,
+        stability_reason,
     )
 
 
@@ -969,8 +1150,9 @@ class DictationDaemon:
     ) -> tuple[str, str, int]:
         identity = _target_identity(target)
         if identity is None:
-            identity = ("", "")
-        return (*identity, get_foreground_window_handle())
+            return ("", "", get_foreground_window_handle())
+        exe, cls, hwnd = identity
+        return (exe, cls, hwnd if hwnd > 0 else get_foreground_window_handle())
 
     @staticmethod
     def _photoshop_layer_control_key(
@@ -1077,6 +1259,96 @@ class DictationDaemon:
         with self._lock:
             session.has_output = True
             session.last_char = text[-1]
+
+    def _acquire_target(self) -> TargetAcquisitionResult:
+        return acquire_stable_caret_context(
+            probe_fn=lambda: self._resolve_injection_context(get_caret_context()),
+            binding_fn=_foreground_target_binding,
+        )
+
+    def _dispatch_spoken_action(
+        self,
+        action: str,
+        boundary: str,
+        count: int = 1,
+        queued_target_identity: tuple[Any, ...] | None | object = (
+            _TARGET_IDENTITY_UNBOUND
+        ),
+        caret_context: CaretContext | None = None,
+        **timings: float,
+    ) -> None:
+        """Execute a parsed spoken action through target validation and safety dispatch."""
+        if action not in ("backspace", "spacebar"):
+            return
+
+        if self._has_pending_number():
+            self._reset_number_normalizer()
+        self._discard_manual_line_break()
+
+        caret_context_ms = timings.get("caret_context_ms", 0.0)
+        if caret_context is None:
+            caret_started = time.monotonic()
+            acquired = self._acquire_target()
+            caret_context = acquired.context
+            caret_context_ms = (time.monotonic() - caret_started) * 1000.0
+
+            if not caret_context.injection_allowed:
+                _log_focus_rejection(
+                    caret_context,
+                    boundary,
+                    attempts=acquired.attempts,
+                    stability_reason=acquired.stability_reason,
+                )
+                self._record_outcome(OUTCOME_FOCUS_REJECTED)
+                _log_utterance_outcome(
+                    OUTCOME_FOCUS_REJECTED,
+                    boundary,
+                    caret_context_ms=caret_context_ms,
+                    **timings,
+                )
+                return
+
+            current_identity = _target_identity(caret_context.target)
+            if _target_binding_changed(queued_target_identity, current_identity):
+                self._record_outcome(OUTCOME_FOCUS_CHANGED)
+                _log_utterance_outcome(
+                    OUTCOME_FOCUS_CHANGED,
+                    boundary,
+                    caret_context_ms=caret_context_ms,
+                    **timings,
+                )
+                self._notify_focus_change()
+                return
+
+        try:
+            if action == "backspace":
+                for _ in range(count):
+                    send_backspace(caret_context.target)
+                with self._lock:
+                    self._target_injection_session = None
+            elif action == "spacebar":
+                for _ in range(count):
+                    send_spacebar(caret_context.target)
+                session = self._current_injection_session(caret_context.target)
+                with self._lock:
+                    session.has_output = True
+                    session.last_char = " "
+            self._record_outcome(OUTCOME_ACTION_EXECUTED)
+            _log_utterance_outcome(
+                OUTCOME_ACTION_EXECUTED,
+                boundary,
+                caret_context_ms=caret_context_ms,
+                **timings,
+            )
+        except Exception:
+            log.exception("Key action dispatch failed")
+            self._record_outcome(OUTCOME_DISPATCH_FAILURE)
+            _log_utterance_outcome(
+                OUTCOME_DISPATCH_FAILURE,
+                boundary,
+                caret_context_ms=caret_context_ms,
+                **timings,
+            )
 
     def _finalize_recording_boundaries(self) -> None:
         """Clear manual and target-session state after queued final output."""
@@ -1212,7 +1484,7 @@ class DictationDaemon:
             utterance_end_time = time.monotonic()
             # Bind the pre-transcription target to the queued utterance so a
             # focus change during recognition is observable instead of silent.
-            queued_target_identity = foreground_target_identity()
+            queued_target_identity = foreground_target_binding()
             self._transcribe_pool.submit(
                 self._transcribe_and_type,
                 utterance,
@@ -1228,39 +1500,64 @@ class DictationDaemon:
         """
         if not text or not text.strip():
             return
-        try:
-            cleaned = guard_pathological_decoder_output(
-                self._remove_prompt_leak(text)
-            ).strip()
-        except PathologicalDecoderOutput as error:
-            self._record_outcome(OUTCOME_REPEAT_SUPPRESSED)
-            _log_utterance_outcome(
-                OUTCOME_REPEAT_SUPPRESSED,
-                "websocket_stream",
-            )
-            _notify_pathological_decoder_output(error)
+        segments = parse_spoken_segments(text)
+        if not segments:
             return
-        if not cleaned:
+        if all(s.kind == "action" for s in segments):
+            for s in segments:
+                self._dispatch_spoken_action(
+                    s.action,
+                    boundary="websocket_stream",
+                    count=s.count,
+                )
+            return
+
+        preprocessed_segments: list[SpokenSegment] = []
+        for seg in segments:
+            if seg.kind == "action":
+                preprocessed_segments.append(seg)
+            else:
+                try:
+                    cleaned = guard_pathological_decoder_output(
+                        self._remove_prompt_leak(seg.text)
+                    ).strip()
+                except PathologicalDecoderOutput as error:
+                    self._record_outcome(OUTCOME_REPEAT_SUPPRESSED)
+                    _log_utterance_outcome(
+                        OUTCOME_REPEAT_SUPPRESSED,
+                        "websocket_stream",
+                    )
+                    _notify_pathological_decoder_output(error)
+                    return
+                if cleaned:
+                    preprocessed_segments.append(
+                        SpokenSegment(kind="text", text=cleaned, count=seg.count)
+                    )
+
+        if not preprocessed_segments or not any(
+            s.kind == "action" or s.text for s in preprocessed_segments
+        ):
             self._record_outcome(OUTCOME_EMPTY_RECOGNITION)
             _log_utterance_outcome(
                 OUTCOME_EMPTY_RECOGNITION,
                 "websocket_stream",
             )
             return
-        cleaned = apply_automatic_punctuation_setting(
-            cleaned,
-            self._automatic_punctuation_for_recording,
-            preserve_spoken_boundaries=True,
-        )
-        cleaned = self._normalize_numbers(cleaned)
+
         caret_started = time.monotonic()
-        caret_context = self._resolve_injection_context(get_caret_context())
+        acquired = self._acquire_target()
+        caret_context = acquired.context
         caret_context_ms = (time.monotonic() - caret_started) * 1000.0
         if not caret_context.injection_allowed:
             if self._has_pending_number():
                 self._reset_number_normalizer()
             self._discard_manual_line_break()
-            _log_focus_rejection(caret_context, "websocket_stream")
+            _log_focus_rejection(
+                caret_context,
+                "websocket_stream",
+                attempts=acquired.attempts,
+                stability_reason=acquired.stability_reason,
+            )
             self._record_outcome(OUTCOME_FOCUS_REJECTED)
             _log_utterance_outcome(
                 OUTCOME_FOCUS_REJECTED,
@@ -1268,83 +1565,98 @@ class DictationDaemon:
                 caret_context_ms=caret_context_ms,
             )
             return
-        if self._has_pending_number():
-            self._schedule_pending_number_flush(caret_context.target)
-        if not cleaned:
-            self._record_outcome(OUTCOME_EMPTY_RECOGNITION)
-            _log_utterance_outcome(
-                OUTCOME_EMPTY_RECOGNITION,
-                "websocket_stream",
-                caret_context_ms=caret_context_ms,
-            )
-            return
-        cleaned = guard_pathological_repetition(cleaned)
-        uncased_cleaned = cleaned
-        # Suppress hallucination loops (e.g. "Thank you" repeated during silence).
-        # Allow up to _WS_MAX_REPEATS identical emissions, then suppress.
-        normalized = uncased_cleaned.lower().rstrip(".,!?")
-        suppressed_repeat = False
-        with self._lock:
-            prior_ws_text = self._last_ws_text
-            prior_ws_repeat_count = self._ws_repeat_count
-            if normalized == self._last_ws_text:
-                self._ws_repeat_count += 1
-                if self._ws_repeat_count >= self._WS_MAX_REPEATS:
-                    log.debug("Suppressed repeated text (count=%d)", self._ws_repeat_count)
-                    suppressed_repeat = True
-            else:
-                self._last_ws_text = normalized
-                self._ws_repeat_count = 0
-        if suppressed_repeat:
-            self._record_outcome(OUTCOME_REPEAT_SUPPRESSED)
-            _log_utterance_outcome(
-                OUTCOME_REPEAT_SUPPRESSED,
-                "websocket_stream",
-                caret_context_ms=caret_context_ms,
-            )
-            return
-        cleaned, manual_line_break = self._apply_persistent_formatting(
-            uncased_cleaned,
-            caret_context,
-        )
-        if not cleaned:
-            self._record_outcome(OUTCOME_FORMATTING_APPLIED)
-            _log_utterance_outcome(
-                OUTCOME_FORMATTING_APPLIED,
-                "websocket_stream",
-                caret_context_ms=caret_context_ms,
-            )
-            return
-        try:
-            self._emit_text(
-                self._prepare_ws_injection(
-                    cleaned,
+
+        any_injected = False
+        for seg in preprocessed_segments:
+            if seg.kind == "action":
+                self._dispatch_spoken_action(
+                    seg.action,
+                    boundary="websocket_stream",
+                    count=seg.count,
                     caret_context=caret_context,
-                    manual_line_break=manual_line_break,
-                ),
+                )
+                continue
+            cleaned = seg.text
+            cleaned = apply_automatic_punctuation_setting(
                 cleaned,
+                self._automatic_punctuation_for_recording,
+                preserve_spoken_boundaries=True,
+            )
+            cleaned = self._normalize_numbers(cleaned)
+            if self._has_pending_number():
+                self._schedule_pending_number_flush(caret_context.target)
+            if not cleaned:
+                continue
+            cleaned = guard_pathological_repetition(cleaned)
+            uncased_cleaned = cleaned
+            # Suppress hallucination loops (e.g. "Thank you" repeated during silence).
+            # Allow up to _WS_MAX_REPEATS identical emissions, then suppress.
+            normalized = uncased_cleaned.lower().rstrip(".,!?")
+            suppressed_repeat = False
+            with self._lock:
+                prior_ws_text = self._last_ws_text
+                prior_ws_repeat_count = self._ws_repeat_count
+                if normalized == self._last_ws_text:
+                    self._ws_repeat_count += 1
+                    if self._ws_repeat_count >= self._WS_MAX_REPEATS:
+                        log.debug("Suppressed repeated text (count=%d)", self._ws_repeat_count)
+                        suppressed_repeat = True
+                else:
+                    self._last_ws_text = normalized
+                    self._ws_repeat_count = 0
+            if suppressed_repeat:
+                self._record_outcome(OUTCOME_REPEAT_SUPPRESSED)
+                _log_utterance_outcome(
+                    OUTCOME_REPEAT_SUPPRESSED,
+                    "websocket_stream",
+                    caret_context_ms=caret_context_ms,
+                )
+                continue
+            cleaned, manual_line_break = self._apply_persistent_formatting(
+                uncased_cleaned,
                 caret_context,
             )
-            log.debug("WS typed: %d chars", len(cleaned))
-        except Exception:
-            # Failed input must not contaminate the repeat guard.
-            with self._lock:
-                self._last_ws_text = prior_ws_text
-                self._ws_repeat_count = prior_ws_repeat_count
-            self._record_outcome(OUTCOME_TYPING_FAILURE)
+            if not cleaned:
+                self._record_outcome(OUTCOME_FORMATTING_APPLIED)
+                _log_utterance_outcome(
+                    OUTCOME_FORMATTING_APPLIED,
+                    "websocket_stream",
+                    caret_context_ms=caret_context_ms,
+                )
+                continue
+            try:
+                self._emit_text(
+                    self._prepare_ws_injection(
+                        cleaned,
+                        caret_context=caret_context,
+                        manual_line_break=manual_line_break,
+                    ),
+                    cleaned,
+                    caret_context,
+                )
+                log.debug("WS typed: %d chars", len(cleaned))
+                any_injected = True
+            except Exception:
+                # Failed input must not contaminate the repeat guard.
+                with self._lock:
+                    self._last_ws_text = prior_ws_text
+                    self._ws_repeat_count = prior_ws_repeat_count
+                self._record_outcome(OUTCOME_TYPING_FAILURE)
+                _log_utterance_outcome(
+                    OUTCOME_TYPING_FAILURE,
+                    "websocket_stream",
+                    caret_context_ms=caret_context_ms,
+                )
+                log.error("Typing failed", exc_info=True)
+                return
+
+        if any_injected:
+            self._record_outcome(OUTCOME_INJECTED)
             _log_utterance_outcome(
-                OUTCOME_TYPING_FAILURE,
+                OUTCOME_INJECTED,
                 "websocket_stream",
                 caret_context_ms=caret_context_ms,
             )
-            log.error("Typing failed", exc_info=True)
-            return
-        self._record_outcome(OUTCOME_INJECTED)
-        _log_utterance_outcome(
-            OUTCOME_INJECTED,
-            "websocket_stream",
-            caret_context_ms=caret_context_ms,
-        )
 
     def _prepare_ws_injection(
         self,
@@ -1473,16 +1785,43 @@ class DictationDaemon:
             text = guard_pathological_decoder_output(
                 self._remove_prompt_leak(raw_text)
             )
-            text = guard_pathological_repetition(self._normalize_numbers(text))
+            segments = parse_spoken_segments(text)
+            if not segments:
+                self._record_outcome(OUTCOME_EMPTY_RECOGNITION)
+                _log_utterance_outcome(
+                    OUTCOME_EMPTY_RECOGNITION,
+                    "local",
+                    transcription_ms=(time.monotonic() - transcription_started) * 1000.0,
+                )
+                return
+
+            if all(s.kind == "action" for s in segments):
+                transcription_ms = (time.monotonic() - transcription_started) * 1000.0
+                for s in segments:
+                    self._dispatch_spoken_action(
+                        s.action,
+                        boundary="local",
+                        count=s.count,
+                        queued_target_identity=queued_target_identity,
+                        transcription_ms=transcription_ms,
+                    )
+                return
+
             transcription_ms = (time.monotonic() - transcription_started) * 1000.0
             caret_started = time.monotonic()
-            caret_context = self._resolve_injection_context(get_caret_context())
+            acquired = self._acquire_target()
+            caret_context = acquired.context
             caret_context_ms = (time.monotonic() - caret_started) * 1000.0
             if not caret_context.injection_allowed:
                 if self._has_pending_number():
                     self._reset_number_normalizer()
                 self._discard_manual_line_break()
-                _log_focus_rejection(caret_context, "local")
+                _log_focus_rejection(
+                    caret_context,
+                    "local",
+                    attempts=acquired.attempts,
+                    stability_reason=acquired.stability_reason,
+                )
                 self._record_outcome(OUTCOME_FOCUS_REJECTED)
                 _log_utterance_outcome(
                     OUTCOME_FOCUS_REJECTED,
@@ -1510,122 +1849,139 @@ class DictationDaemon:
                 return
             if self._has_pending_number():
                 self._schedule_pending_number_flush(caret_context.target)
-            if not text:
-                self._record_outcome(OUTCOME_EMPTY_RECOGNITION)
-                _log_utterance_outcome(
-                    OUTCOME_EMPTY_RECOGNITION,
-                    "local",
-                    transcription_ms=transcription_ms,
-                    caret_context_ms=caret_context_ms,
-                )
-                return
-            if (
-                self.streaming
-                and not self._use_ws
-                and not self._emission_history.accept(text)
-            ):
-                self._record_outcome(OUTCOME_REPEAT_SUPPRESSED)
-                _log_utterance_outcome(
-                    OUTCOME_REPEAT_SUPPRESSED,
-                    "local",
-                    transcription_ms=transcription_ms,
-                    caret_context_ms=caret_context_ms,
-                )
-                return
-            recognized_text = text
-            manual_line_break = False
-            with self._lock:
+
+            any_injected = False
+            for seg in segments:
+                if seg.kind == "action":
+                    self._dispatch_spoken_action(
+                        seg.action,
+                        boundary="local",
+                        count=seg.count,
+                        caret_context=caret_context,
+                        transcription_ms=transcription_ms,
+                    )
+                    continue
+
+                seg_text = self._normalize_numbers(seg.text)
+                if self._has_pending_number():
+                    self._schedule_pending_number_flush(caret_context.target)
+                if not seg_text:
+                    continue
+                seg_text = guard_pathological_repetition(seg_text)
+                if not seg_text:
+                    continue
                 if (
-                    self._last_speech_end_time > 0.0
-                    and (speech_start_time - self._last_speech_end_time)
-                    >= self._formatting_timeout_s
+                    self.streaming
+                    and not self._use_ws
+                    and not self._emission_history.accept(seg_text)
                 ):
-                    self._all_caps_active = False
-                    self._caps_active = False
-                    self._cap_next = False
-
-                original_all_caps = self._all_caps_active
-                original_caps = self._caps_active
-                original_cap_next = self._cap_next
-                original_backtick = self._backtick_active
-                original_quote = self._quote_state
-
-                preview, preview_all_caps = apply_all_caps_commands(
-                    text,
-                    original_all_caps,
-                )
-                preview, preview_caps, preview_cap_next, casing_applied = (
-                    apply_formatting_commands(
-                        preview,
-                        original_caps,
-                        original_cap_next,
-                    )
-                )
-                preview, preview_backtick = apply_backtick_commands(
-                    preview,
-                    original_backtick,
-                )
-                preview, preview_quote = apply_quote_commands(
-                    preview,
-                    original_quote,
-                )
-
-                if preview and self.streaming:
-                    manual_line_break = self._consume_manual_line_break()
-                if preview:
-                    formatting_casing_active = any(
-                        (
-                            original_all_caps,
-                            original_caps,
-                            original_cap_next,
-                            preview_all_caps,
-                            preview_caps,
-                            preview_cap_next,
-                            casing_applied,
-                        )
-                    )
-                    text = self._apply_boundary_casing_and_conversions(
-                        preview,
-                        caret_context,
-                        manual_line_break,
-                        preserve_when_none=formatting_casing_active,
-                        preserve_explicit_initial=formatting_casing_active,
-                    )
-                else:
-                    text = ""
-
-                self._all_caps_active = preview_all_caps
-                self._caps_active = preview_caps
-                self._cap_next = preview_cap_next
-                self._backtick_active = preview_backtick
-                self._quote_state = preview_quote
-                self._last_speech_end_time = utterance_end_time
-            if text:
-                injection = self._prepare_ws_injection(
-                    text.replace(EXPLICIT_DOT_COMMAND, "."),
-                    caret_context=caret_context,
-                    manual_line_break=manual_line_break,
-                )
-                dispatch_started = time.monotonic()
-                vad_to_dispatch_ms = (dispatch_started - utterance_end_time) * 1000.0
-                try:
-                    self._emit_text(injection, text, caret_context)
-                except Exception:
-                    self._emission_history.rollback(recognized_text)
-                    dispatch_ms = (time.monotonic() - dispatch_started) * 1000.0
-                    self._record_outcome(OUTCOME_TYPING_FAILURE)
+                    self._record_outcome(OUTCOME_REPEAT_SUPPRESSED)
                     _log_utterance_outcome(
-                        OUTCOME_TYPING_FAILURE,
+                        OUTCOME_REPEAT_SUPPRESSED,
                         "local",
-                        vad_to_dispatch_ms=vad_to_dispatch_ms,
                         transcription_ms=transcription_ms,
                         caret_context_ms=caret_context_ms,
-                        dispatch_ms=dispatch_ms,
                     )
-                    log.error("Typing failed after recognition", exc_info=True)
-                    return
-                dispatch_ms = (time.monotonic() - dispatch_started) * 1000.0
-                log.debug("Typed: %d chars", len(text))
+                    continue
+
+                recognized_text = seg_text
+                manual_line_break = False
+                with self._lock:
+                    if (
+                        self._last_speech_end_time > 0.0
+                        and (speech_start_time - self._last_speech_end_time)
+                        >= self._formatting_timeout_s
+                    ):
+                        self._all_caps_active = False
+                        self._caps_active = False
+                        self._cap_next = False
+
+                    original_all_caps = self._all_caps_active
+                    original_caps = self._caps_active
+                    original_cap_next = self._cap_next
+                    original_backtick = self._backtick_active
+                    original_quote = self._quote_state
+
+                    preview, preview_all_caps = apply_all_caps_commands(
+                        seg_text,
+                        original_all_caps,
+                    )
+                    preview, preview_caps, preview_cap_next, casing_applied = (
+                        apply_formatting_commands(
+                            preview,
+                            original_caps,
+                            original_cap_next,
+                        )
+                    )
+                    preview, preview_backtick = apply_backtick_commands(
+                        preview,
+                        original_backtick,
+                    )
+                    preview, preview_quote = apply_quote_commands(
+                        preview,
+                        original_quote,
+                    )
+
+                    if preview and self.streaming:
+                        manual_line_break = self._consume_manual_line_break()
+                    if preview:
+                        formatting_casing_active = any(
+                            (
+                                original_all_caps,
+                                original_caps,
+                                original_cap_next,
+                                preview_all_caps,
+                                preview_caps,
+                                preview_cap_next,
+                                casing_applied,
+                            )
+                        )
+                        formatted_text = self._apply_boundary_casing_and_conversions(
+                            preview,
+                            caret_context,
+                            manual_line_break,
+                            preserve_when_none=formatting_casing_active,
+                            preserve_explicit_initial=formatting_casing_active,
+                        )
+                    else:
+                        formatted_text = ""
+
+                    self._all_caps_active = preview_all_caps
+                    self._caps_active = preview_caps
+                    self._cap_next = preview_cap_next
+                    self._backtick_active = preview_backtick
+                    self._quote_state = preview_quote
+                    self._last_speech_end_time = utterance_end_time
+
+                if formatted_text:
+                    injection = self._prepare_ws_injection(
+                        formatted_text.replace(EXPLICIT_DOT_COMMAND, "."),
+                        caret_context=caret_context,
+                        manual_line_break=manual_line_break,
+                    )
+                    dispatch_started = time.monotonic()
+                    vad_to_dispatch_ms = (dispatch_started - utterance_end_time) * 1000.0
+                    try:
+                        self._emit_text(injection, formatted_text, caret_context)
+                        any_injected = True
+                    except Exception:
+                        self._emission_history.rollback(recognized_text)
+                        dispatch_ms = (time.monotonic() - dispatch_started) * 1000.0
+                        self._record_outcome(OUTCOME_TYPING_FAILURE)
+                        _log_utterance_outcome(
+                            OUTCOME_TYPING_FAILURE,
+                            "local",
+                            vad_to_dispatch_ms=vad_to_dispatch_ms,
+                            transcription_ms=transcription_ms,
+                            caret_context_ms=caret_context_ms,
+                            dispatch_ms=dispatch_ms,
+                        )
+                        log.error("Typing failed after recognition", exc_info=True)
+                        return
+                    dispatch_ms = (time.monotonic() - dispatch_started) * 1000.0
+                    log.debug("Typed: %d chars", len(formatted_text))
+
+            if any_injected:
                 self._record_outcome(OUTCOME_INJECTED)
                 _log_utterance_outcome(
                     OUTCOME_INJECTED,
@@ -1635,7 +1991,7 @@ class DictationDaemon:
                     caret_context_ms=caret_context_ms,
                     dispatch_ms=dispatch_ms,
                 )
-            else:
+            elif not any(s.kind == "action" for s in segments):
                 self._record_outcome(OUTCOME_FORMATTING_APPLIED)
                 _log_utterance_outcome(
                     OUTCOME_FORMATTING_APPLIED,
@@ -1686,61 +2042,90 @@ class DictationDaemon:
                 # Type directly — bypass repetition filter since pending
                 # text is the final unstreamed word, not a hallucination.
                 try:
-                    caret_context = self._resolve_injection_context(get_caret_context())
+                    segments = parse_spoken_segments(pending)
+                    if not segments:
+                        return
+                    if all(s.kind == "action" for s in segments):
+                        for s in segments:
+                            self._dispatch_spoken_action(
+                                s.action,
+                                boundary="websocket_pending",
+                                count=s.count,
+                            )
+                        return
+
+                    acquired = self._acquire_target()
+                    caret_context = acquired.context
                     if not caret_context.injection_allowed:
                         self._discard_manual_line_break()
-                        _log_focus_rejection(caret_context, "websocket_pending")
+                        _log_focus_rejection(
+                            caret_context,
+                            "websocket_pending",
+                            attempts=acquired.attempts,
+                            stability_reason=acquired.stability_reason,
+                        )
                         self._record_outcome(OUTCOME_FOCUS_REJECTED)
                         _log_utterance_outcome(
                             OUTCOME_FOCUS_REJECTED,
                             "websocket_pending",
                         )
                         return
-                    cleaned = guard_pathological_decoder_output(
-                        self._remove_prompt_leak(pending)
-                    )
-                    if not cleaned.strip():
-                        self._record_outcome(OUTCOME_EMPTY_RECOGNITION)
-                        _log_utterance_outcome(
-                            OUTCOME_EMPTY_RECOGNITION,
-                            "websocket_pending",
+
+                    any_injected = False
+                    for seg in segments:
+                        if seg.kind == "action":
+                            self._dispatch_spoken_action(
+                                seg.action,
+                                boundary="websocket_pending",
+                                count=seg.count,
+                                caret_context=caret_context,
+                            )
+                            continue
+
+                        cleaned = guard_pathological_decoder_output(
+                            self._remove_prompt_leak(seg.text)
                         )
-                        return
-                    cleaned = apply_automatic_punctuation_setting(
-                        cleaned.strip(),
-                        self._automatic_punctuation_for_recording,
-                        preserve_spoken_boundaries=True,
-                    )
-                    cleaned = self._normalize_numbers(cleaned)
-                    if not cleaned:
-                        self._record_outcome(OUTCOME_EMPTY_RECOGNITION)
-                        _log_utterance_outcome(
-                            OUTCOME_EMPTY_RECOGNITION,
-                            "websocket_pending",
+                        if not cleaned.strip():
+                            continue
+                        cleaned = apply_automatic_punctuation_setting(
+                            cleaned.strip(),
+                            self._automatic_punctuation_for_recording,
+                            preserve_spoken_boundaries=True,
                         )
-                        return
-                    cleaned = guard_pathological_repetition(cleaned)
-                    pre_correction_text = cleaned
-                    manual_line_break = self._consume_manual_line_break()
-                    cleaned = self._apply_boundary_casing_and_conversions(
-                        pre_correction_text,
-                        caret_context,
-                        manual_line_break,
-                    )
-                    self._emit_text(
-                        self._prepare_ws_injection(
+                        cleaned = self._normalize_numbers(cleaned)
+                        if not cleaned:
+                            continue
+                        cleaned = guard_pathological_repetition(cleaned)
+                        pre_correction_text = cleaned
+                        manual_line_break = self._consume_manual_line_break()
+                        cleaned = self._apply_boundary_casing_and_conversions(
+                            pre_correction_text,
+                            caret_context,
+                            manual_line_break,
+                        )
+                        self._emit_text(
+                            self._prepare_ws_injection(
+                                cleaned,
+                                caret_context=caret_context,
+                                manual_line_break=manual_line_break,
+                            ),
                             cleaned,
-                            caret_context=caret_context,
-                            manual_line_break=manual_line_break,
-                        ),
-                        cleaned,
-                        caret_context,
-                    )
-                    self._record_outcome(OUTCOME_INJECTED)
-                    _log_utterance_outcome(
-                        OUTCOME_INJECTED,
-                        "websocket_pending",
-                    )
+                            caret_context,
+                        )
+                        any_injected = True
+
+                    if any_injected:
+                        self._record_outcome(OUTCOME_INJECTED)
+                        _log_utterance_outcome(
+                            OUTCOME_INJECTED,
+                            "websocket_pending",
+                        )
+                    elif not any(s.kind == "action" for s in segments):
+                        self._record_outcome(OUTCOME_EMPTY_RECOGNITION)
+                        _log_utterance_outcome(
+                            OUTCOME_EMPTY_RECOGNITION,
+                            "websocket_pending",
+                        )
                 except PathologicalDecoderOutput as error:
                     self._record_outcome(OUTCOME_REPEAT_SUPPRESSED)
                     _log_utterance_outcome(
@@ -1798,9 +2183,28 @@ class DictationDaemon:
                         "websocket_batch",
                     )
                     return
-                caret_context = self._resolve_injection_context(get_caret_context())
+                segments = parse_spoken_segments(text)
+                if not segments:
+                    return
+                if all(s.kind == "action" for s in segments):
+                    for s in segments:
+                        self._dispatch_spoken_action(
+                            s.action,
+                            boundary="websocket_batch",
+                            count=s.count,
+                            queued_target_identity=queued_target_identity,
+                        )
+                    return
+
+                acquired = self._acquire_target()
+                caret_context = acquired.context
                 if not caret_context.injection_allowed:
-                    _log_focus_rejection(caret_context, "websocket_batch")
+                    _log_focus_rejection(
+                        caret_context,
+                        "websocket_batch",
+                        attempts=acquired.attempts,
+                        stability_reason=acquired.stability_reason,
+                    )
                     self._record_outcome(OUTCOME_FOCUS_REJECTED)
                     _log_utterance_outcome(
                         OUTCOME_FOCUS_REJECTED,
@@ -1819,27 +2223,37 @@ class DictationDaemon:
                     )
                     self._notify_focus_change()
                     return
-                text = normalize_spoken_numbers(text)
-                text = apply_automatic_punctuation_setting(
-                    text,
-                    self._automatic_punctuation_for_recording,
-                    preserve_spoken_boundaries=True,
-                )
-                manual_line_break = self._consume_manual_line_break()
-                text = self._apply_boundary_casing_and_conversions(
-                    text,
-                    caret_context,
-                    manual_line_break,
-                )
-                self._emit_text(
-                    self._prepare_ws_injection(
-                        text,
-                        caret_context=caret_context,
-                        manual_line_break=manual_line_break,
-                    ),
-                    text,
-                    caret_context,
-                )
+
+                for seg in segments:
+                    if seg.kind == "action":
+                        self._dispatch_spoken_action(
+                            seg.action,
+                            boundary="websocket_batch",
+                            count=seg.count,
+                            caret_context=caret_context,
+                        )
+                        continue
+                    seg_text = normalize_spoken_numbers(seg.text)
+                    seg_text = apply_automatic_punctuation_setting(
+                        seg_text,
+                        self._automatic_punctuation_for_recording,
+                        preserve_spoken_boundaries=True,
+                    )
+                    manual_line_break = self._consume_manual_line_break()
+                    seg_text = self._apply_boundary_casing_and_conversions(
+                        seg_text,
+                        caret_context,
+                        manual_line_break,
+                    )
+                    self._emit_text(
+                        self._prepare_ws_injection(
+                            seg_text,
+                            caret_context=caret_context,
+                            manual_line_break=manual_line_break,
+                        ),
+                        seg_text,
+                        caret_context,
+                    )
                 log.debug("WS batch typed: %d chars", len(text))
                 self._record_outcome(OUTCOME_INJECTED)
                 _log_utterance_outcome(OUTCOME_INJECTED, "websocket_batch")
@@ -1999,7 +2413,7 @@ class DictationDaemon:
                     self._transcribe_and_type,
                     remaining,
                     utterance_end_time,
-                    queued_target_identity=foreground_target_identity(),
+                    queued_target_identity=foreground_target_binding(),
                 )
             self._transcribe_pool.submit(self._flush_pending_number_and_type)
             self._transcribe_pool.submit(self._finalize_recording_boundaries)
@@ -2013,14 +2427,14 @@ class DictationDaemon:
                 self._transcribe_pool.submit(
                     self._transcribe_batch_ws,
                     full_audio,
-                    queued_target_identity=foreground_target_identity(),
+                    queued_target_identity=foreground_target_binding(),
                 )
             else:
                 self._transcribe_pool.submit(
                     self._transcribe_and_type,
                     full_audio,
                     time.monotonic(),
-                    queued_target_identity=foreground_target_identity(),
+                    queued_target_identity=foreground_target_binding(),
                 )
             self._transcribe_pool.submit(self._finalize_recording_boundaries)
         else:
