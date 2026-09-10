@@ -35,6 +35,8 @@ CachedPhysicalContextGeneration := ""
 IdleIconPath := Runtime "\assets\dictation_idle.ico"
 RecordingIconPath := Runtime "\assets\dictation_recording.ico"
 LastRecordingState := -1
+TrayIconRecoveryAttempts := 0
+TrayIconRecoveryMaxAttempts := 120
 MicrophoneMenu := Menu()
 CapitalizationMenu := Menu()
 CaptureSession := 0
@@ -71,6 +73,7 @@ A_IconTip := "Breezy Dictation"
 
 RefreshMicrophones()
 UpdateRecordingIcon()
+EnsureTrayIconRegistered()
 SetTimer(UpdateRecordingIcon, 150)
 
 Hotkey UserHotkey, HandleDictationHotkey
@@ -573,6 +576,45 @@ RestartDictation(*) {
 OpenLogs(*) {
     global Runtime
     Run(Runtime "\logs")
+}
+
+EnsureTrayIconRegistered(*) {
+    global TrayIconRecoveryAttempts, TrayIconRecoveryMaxAttempts
+    if IsTrayIconRegistered() {
+        SetTimer(EnsureTrayIconRegistered, 0)
+        return
+    }
+    if TrayIconRecoveryAttempts >= TrayIconRecoveryMaxAttempts {
+        SetTimer(EnsureTrayIconRegistered, 0)
+        return
+    }
+
+    TrayIconRecoveryAttempts += 1
+    A_IconHidden := true
+    A_IconHidden := false
+    if IsTrayIconRegistered() {
+        SetTimer(EnsureTrayIconRegistered, 0)
+        return
+    }
+    SetTimer(EnsureTrayIconRegistered, -250)
+}
+
+IsTrayIconRegistered() {
+    static AutoHotkeyNotifyIconId := 1028
+    identifierSize := A_PtrSize = 8 ? 40 : 28
+    windowOffset := A_PtrSize = 8 ? 8 : 4
+    iconIdOffset := A_PtrSize = 8 ? 16 : 8
+    identifier := Buffer(identifierSize, 0)
+    iconRectangle := Buffer(16, 0)
+    NumPut("UInt", identifierSize, identifier, 0)
+    NumPut("Ptr", A_ScriptHwnd, identifier, windowOffset)
+    NumPut("UInt", AutoHotkeyNotifyIconId, identifier, iconIdOffset)
+    return DllCall(
+        "Shell32\Shell_NotifyIconGetRect",
+        "Ptr", identifier.Ptr,
+        "Ptr", iconRectangle.Ptr,
+        "Int"
+    ) = 0
 }
 
 UpdateRecordingIcon(*) {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.8] - Unreleased
 
+### Fixed
+- **Reliable tray icon after Windows logon**
+  - Breezy now repairs its tray registration automatically if Windows starts the dictation and hotkey processes before the notification area is ready. Dictation startup is not delayed, and the recovery check stops as soon as the icon is present.
+
 ---
 
 ## [1.0.7] - 2026-09-06
