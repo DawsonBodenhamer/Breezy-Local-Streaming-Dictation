@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.9] - Unreleased
 
+### Fixed
+- **Spoken punctuation after Backspace**
+  - Saying "backspace comma" now deletes a character and types the comma without requiring a pause between commands. Other explicitly spoken punctuation is preserved as well.
+
 ---
 
 ## [1.0.8] - 2026-09-10

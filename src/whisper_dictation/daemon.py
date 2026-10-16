@@ -42,6 +42,7 @@ from .engine.local import (
     guard_pathological_decoder_output,
     guard_pathological_repetition,
     normalize_spoken_numbers,
+    render_explicit_punctuation,
     remove_configured_prompt_leak,
 )
 from .hotkey import HotkeyListener
@@ -382,7 +383,9 @@ def parse_spoken_segments(text: str) -> list[SpokenSegment]:
         chains.append((start, end))
 
     if not chains:
-        return [SpokenSegment(kind="text", text=trimmed)]
+        return [
+            SpokenSegment(kind="text", text=render_explicit_punctuation(trimmed))
+        ]
 
     segments: list[SpokenSegment] = []
     cursor = 0
@@ -402,7 +405,11 @@ def parse_spoken_segments(text: str) -> list[SpokenSegment]:
                 if is_first_bs:
                     preceding = preceding.rstrip(_SPOKEN_ACTION_TERMINAL_PUNCTUATION).strip(" \t")
                 if preceding:
-                    segments.append(SpokenSegment(kind="text", text=preceding))
+                    segments.append(
+                        SpokenSegment(
+                            kind="text", text=render_explicit_punctuation(preceding)
+                        )
+                    )
 
         for tok in tokens:
             action_name = "backspace" if tok.group("bs") else "spacebar"
@@ -416,7 +423,9 @@ def parse_spoken_segments(text: str) -> list[SpokenSegment]:
     if cursor < len(trimmed):
         trailing = trimmed[cursor:].strip(" \t")
         if trailing:
-            segments.append(SpokenSegment(kind="text", text=trailing))
+            segments.append(
+                SpokenSegment(kind="text", text=render_explicit_punctuation(trailing))
+            )
 
     return segments
 
@@ -1771,6 +1780,7 @@ class DictationDaemon:
                     automatic_punctuation=automatic_punctuation,
                     normalize_numbers=not self.streaming,
                     preserve_spoken_boundaries=True,
+                    preserve_spoken_punctuation=True,
                 )
             else:
                 raw_text = self._engine.transcribe(
@@ -1781,6 +1791,7 @@ class DictationDaemon:
                     raw_text,
                     automatic_punctuation,
                     preserve_spoken_boundaries=True,
+                    preserve_spoken_punctuation=True,
                 )
             text = guard_pathological_decoder_output(
                 self._remove_prompt_leak(raw_text)

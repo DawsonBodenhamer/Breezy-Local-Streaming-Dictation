@@ -991,7 +991,8 @@ def _mark_spoken_punctuation(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
-def _render_explicit_sentence_punctuation(text: str) -> str:
+def render_explicit_punctuation(text: str) -> str:
+    """Render protected spoken punctuation after command parsing is complete."""
     replacements = {
         EXPLICIT_COMMA_COMMAND: ",",
         EXPLICIT_QUESTION_COMMAND: "?",
@@ -1015,7 +1016,7 @@ def _render_explicit_sentence_punctuation(text: str) -> str:
 def apply_spoken_punctuation(text: str) -> str:
     """Convert unambiguous spoken punctuation commands with exact spacing."""
     return render_spoken_boundaries(
-        _render_explicit_sentence_punctuation(_mark_spoken_punctuation(text))
+        render_explicit_punctuation(_mark_spoken_punctuation(text))
     )
 
 
@@ -1032,6 +1033,7 @@ def apply_automatic_punctuation_setting(
     automatic_punctuation: bool,
     *,
     preserve_spoken_boundaries: bool = False,
+    preserve_spoken_punctuation: bool = False,
 ) -> str:
     """Apply spoken punctuation and optionally suppress model-inferred marks."""
     text = _mark_spoken_punctuation(text)
@@ -1064,7 +1066,8 @@ def apply_automatic_punctuation_setting(
             index = run_end
         text = "".join(cleaned)
         text = re.sub(r"[ \t]{2,}", " ", text).strip()
-    text = _render_explicit_sentence_punctuation(text)
+    if not preserve_spoken_punctuation:
+        text = render_explicit_punctuation(text)
     return text if preserve_spoken_boundaries else render_spoken_boundaries(text)
 
 
@@ -1498,17 +1501,20 @@ class LocalEngine(TranscriptionEngine):
         vad_filter: bool,
         automatic_punctuation: bool,
         preserve_spoken_boundaries: bool,
+        preserve_spoken_punctuation: bool = False,
     ) -> str | None:
         started = time.perf_counter()
         analysis_raw = apply_automatic_punctuation_setting(
             raw_text,
             automatic_punctuation,
             preserve_spoken_boundaries=preserve_spoken_boundaries,
+            preserve_spoken_punctuation=preserve_spoken_punctuation,
         )
         analysis_first_pass = apply_automatic_punctuation_setting(
             first_pass,
             automatic_punctuation,
             preserve_spoken_boundaries=preserve_spoken_boundaries,
+            preserve_spoken_punctuation=preserve_spoken_punctuation,
         )
         decision = _numeric_first_pass_decision(analysis_raw, analysis_first_pass)
         if decision is None:
@@ -1541,6 +1547,7 @@ class LocalEngine(TranscriptionEngine):
                 candidate,
                 automatic_punctuation,
                 preserve_spoken_boundaries=preserve_spoken_boundaries,
+                preserve_spoken_punctuation=preserve_spoken_punctuation,
             )
             if candidate is not None
             else None
@@ -1631,6 +1638,7 @@ class LocalEngine(TranscriptionEngine):
         automatic_punctuation: bool = True,
         normalize_numbers: bool = True,
         preserve_spoken_boundaries: bool = False,
+        preserve_spoken_punctuation: bool = False,
     ) -> str:
         self._ensure_model()
 
@@ -1648,6 +1656,7 @@ class LocalEngine(TranscriptionEngine):
             vad_filter=vad_filter,
             automatic_punctuation=automatic_punctuation,
             preserve_spoken_boundaries=preserve_spoken_boundaries,
+            preserve_spoken_punctuation=preserve_spoken_punctuation,
         )
         if recovered is not None:
             text = recovered
@@ -1656,6 +1665,7 @@ class LocalEngine(TranscriptionEngine):
             text,
             automatic_punctuation,
             preserve_spoken_boundaries=preserve_spoken_boundaries,
+            preserve_spoken_punctuation=preserve_spoken_punctuation,
         )
         if normalize_numbers:
             text = normalize_spoken_numbers(text)
