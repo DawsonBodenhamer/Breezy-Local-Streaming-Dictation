@@ -456,13 +456,16 @@ def _is_focused_writable_edit_control(control: Any, auto: Any) -> bool:
         ):
             return True
 
-        # WriterDuet exposes its screenplay editor as a group. Require its
-        # editor markers and TextPattern; the caller still validates the
-        # selection and read-only state before allowing any input.
+        # Some rich-text editors expose their editing surface as a group.
+        # Recognize editor markers here; the caller still requires an
+        # explicitly writable text selection before allowing any input.
         if control.ControlType != getattr(auto.ControlType, "GroupControl", None):
             return False
+        class_names = str(control.ClassName or "").split()
+        if {"tiptap", "ProseMirror"}.issubset(class_names):
+            return _get_pattern(control, auto.PatternId.TextPattern) is not None
         if not {"editor_content", "notranslate"}.issubset(
-            str(control.ClassName or "").split()
+            class_names
         ):
             return False
         parent = control.GetParentControl()
@@ -637,11 +640,13 @@ def get_caret_context() -> CaretContext:
                 return CaretContext(target=target)
             selection = selections[0]
             selection_text = selection.GetText(-1)
-            if bool(
-                selection.GetAttributeValue(
-                    auto.TextAttributeId.IsReadOnlyAttribute,
-                )
-            ):
+            read_only = selection.GetAttributeValue(
+                auto.TextAttributeId.IsReadOnlyAttribute,
+            )
+            if control.ControlType == getattr(auto.ControlType, "GroupControl", None):
+                if not isinstance(read_only, (bool, int)) or read_only != 0:
+                    return CaretContext(target=target)
+            elif bool(read_only):
                 return CaretContext(target=target)
 
             document_text = pattern.DocumentRange.GetText(-1)

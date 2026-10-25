@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.11] - Unreleased
 
+### Fixed
+- **Browser dictation compatibility**
+  - Fixed dictation in some rich-text editing fields such as notes in Milanote.
+
 ---
 
 ## [1.0.10] - 2026-10-25
