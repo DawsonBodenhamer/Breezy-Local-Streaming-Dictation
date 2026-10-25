@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.10] - Unreleased
 
+### Fixed
+- **WriterDuet screenplay dictation**
+  - Fixed dictation into the screenplay editor in the built-in browser, where keyboard typing and annotation dictation already worked.
+
 ---
 
 ## [1.0.9] - 2026-10-16

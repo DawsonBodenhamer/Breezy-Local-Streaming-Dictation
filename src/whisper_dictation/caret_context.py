@@ -450,10 +450,27 @@ def _is_focused_writable_edit_control(control: Any, auto: Any) -> bool:
             return False
         if control.IsOffscreen:
             return False
-        return control.ControlType in (
+        if control.ControlType in (
             auto.ControlType.EditControl,
             auto.ControlType.DocumentControl,
-        )
+        ):
+            return True
+
+        # WriterDuet exposes its screenplay editor as a group. Require its
+        # editor markers and TextPattern; the caller still validates the
+        # selection and read-only state before allowing any input.
+        if control.ControlType != getattr(auto.ControlType, "GroupControl", None):
+            return False
+        if not {"editor_content", "notranslate"}.issubset(
+            str(control.ClassName or "").split()
+        ):
+            return False
+        parent = control.GetParentControl()
+        if parent is None or not {"editor", "public_script_body"}.issubset(
+            str(parent.ClassName or "").split()
+        ):
+            return False
+        return _get_pattern(control, auto.PatternId.TextPattern) is not None
     except Exception:
         return False
 
