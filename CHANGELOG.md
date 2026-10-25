@@ -8,8 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.10] - Unreleased
 
 ### Fixed
-- **WriterDuet screenplay dictation**
-  - Fixed dictation into the screenplay editor in the built-in browser, where keyboard typing and annotation dictation already worked.
+- **Built-in browser dictation**
+  - Fixed an issue where dictated text did not appear in an editable field in the built-in browser.
 
 ---
 
