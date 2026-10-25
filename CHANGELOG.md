@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Built-in browser dictation**
-  - Fixed an issue where dictated text did not appear in an editable field in the built-in browser.
+  - Fixed an issue where dictated text did not appear in an editable field in Codex's built-in browser.
 
 ---
 
