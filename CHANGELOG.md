@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.12] - Unreleased
 
+### Fixed
+- **Spoken question marks**
+  - Prevent automatic punctuation from adding a second question mark beside one you dictate.
+- **Sentence capitalization**
+  - Capitalize the next sentence after a spoken period, question mark or exclamation mark, including across pauses. Continuing in the middle of a sentence after moving the cursor or switching apps stays lowercase.
+
 ---
 
 ## [1.0.11] - 2026-10-25

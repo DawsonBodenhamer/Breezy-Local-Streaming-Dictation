@@ -958,6 +958,16 @@ class DictationDaemon:
         """Case output from uncased match text, then apply corrections exactly once."""
         self._refresh_capitalization_settings()
         boundary = classify_casing_context(caret_context, manual_break_count)
+        if boundary == "sentence" and caret_context.before_char == ".":
+            session = self._target_injection_session
+            if (
+                session is not None
+                and session.window_key == self._window_session_key(caret_context.target)
+                and session.last_char == EXPLICIT_DOT_COMMAND
+            ):
+                # A spoken filename dot can suppress casing, but previous
+                # output never establishes a sentence at the current caret.
+                boundary = "none"
         cased, match_text, pending_boundary = format_spoken_boundaries(
             text,
             initial_boundary=boundary,

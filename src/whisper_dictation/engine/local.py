@@ -962,6 +962,12 @@ def _mark_spoken_punctuation(text: str) -> str:
         )
         text = pattern.sub(character, text)
 
+    # A recognizer can also punctuate the spoken question-mark command.
+    # Remove only inferred marks beside it; explicit repeated commands stay.
+    question_marker = re.escape(EXPLICIT_QUESTION_COMMAND)
+    text = re.sub(rf"\?+[ \t]*({question_marker})", r"\1", text)
+    text = re.sub(rf"({question_marker})[ \t]*\?+", r"\1", text)
+
     text = _NUMERAL_RE.sub(
         lambda match: _NUMERAL_VALUES.get(
             match.group(1).lower(),
@@ -1130,7 +1136,9 @@ def apply_boundary_phrase_casing(
     boundary's own uppercase choice and other fixes still apply.
     """
     enabled = (
-        capitalize_new_paragraphs
+        True
+        if boundary == "sentence"
+        else capitalize_new_paragraphs
         if boundary in ("document", "paragraph")
         else capitalize_new_lines
         if boundary == "line"
@@ -1237,7 +1245,11 @@ def format_spoken_boundaries(
             rendered.append(piece)
 
     return (
-        "".join(rendered),
+        re.sub(
+            r"""([.!?][ \t\"'\u2018\u2019\u201c\u201d\u00ab\u00bb()\[\]{}]+)([a-z])""",
+            lambda match: match.group(1) + match.group(2).upper(),
+            "".join(rendered),
+        ),
         "".join(match_text),
         boundary if needs_casing else "none",
     )
