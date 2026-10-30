@@ -89,12 +89,6 @@ _NUMERAL_RE = re.compile(
     r"\bnumeral\s+(zero|one|two|three|four|five|six|seven|eight|nine|[0-9])\b",
     re.IGNORECASE,
 )
-_DIGIT_COMMAND_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:digit|digi)\s+"
-    r"(zero|one|two|three|four|five|six|seven|eight|nine|[0-9])"
-    r"(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
 _DIGIT_COMMAND_MARKERS = tuple(chr(0xE010 + value) for value in range(10))
 _NUMBER_UNITS = {
     "zero": 0,
@@ -154,6 +148,13 @@ _CARDINAL_PHRASE_RE = re.compile(
     rf"(?<![\w-])(?P<value>{_CARDINAL_PHRASE_PATTERN})(?![\w-])",
     re.IGNORECASE,
 )
+_EXPLICIT_NUMBER_PREFIX_PATTERN = r"(?<![A-Za-z0-9])(?:number|digit|digi)\s+"
+_NUMBER_COMMAND_RE = re.compile(
+    rf"{_EXPLICIT_NUMBER_PREFIX_PATTERN}(?P<value>"
+    rf"[0-9]{{1,3}}(?:,[0-9]{{3}})+|[0-9]+|{_CARDINAL_PHRASE_PATTERN})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_NUMBER_COMMAND_PREFIX_RE = re.compile(rf"{_EXPLICIT_NUMBER_PREFIX_PATTERN}$", re.IGNORECASE)
 _TRAILING_CARDINAL_RE = re.compile(
     rf"(?<![\w-])(?P<value>{_CARDINAL_PHRASE_PATTERN})"
     rf"(?P<suffix>\s*[.,!?;:…]*\s*)$",
@@ -589,6 +590,8 @@ def _find_mixed_ambiguous_integer(text: str) -> re.Match[str] | None:
         return None
     if re.search(r"\b(?:version|vee|v)\s*$", text[: match.start()], re.IGNORECASE):
         return None
+    if _NUMBER_COMMAND_PREFIX_RE.search(text[: match.start()]):
+        return None
     if (
         _VERSION_RE.search(text)
         or _TIME_RE.search(text)
@@ -607,7 +610,7 @@ def _find_mixed_single_digit_run(text: str) -> re.Match[str] | None:
     surrounding = text[: match.start()] + text[match.end() :]
     if not re.search(r"[A-Za-z]", surrounding):
         return None
-    if re.search(r"\bdigit\s*$", text[: match.start()], re.IGNORECASE):
+    if _NUMBER_COMMAND_PREFIX_RE.search(text[: match.start()]):
         return None
     return match
 
@@ -662,11 +665,7 @@ def _numeric_first_pass_decision(
             surrounding = first_pass[: match.start()] + first_pass[match.end() :]
             if not re.search(r"[A-Za-z]", surrounding):
                 shape = "standalone_digit_run"
-            elif re.search(
-                r"\bdigit\s*$",
-                first_pass[: match.start()],
-                re.IGNORECASE,
-            ):
+            elif _NUMBER_COMMAND_PREFIX_RE.search(first_pass[: match.start()]):
                 reason = "explicit_numeric_context"
         return shape, False, reason, None
     return None
@@ -715,8 +714,6 @@ def _numeric_second_pass_details(
 
 def _normalize_cardinal_phrases(text: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        if re.search(r"\bdigit\s+$", match.string[: match.start()], re.IGNORECASE):
-            return match.group(0)
         parsed = _parse_cardinal(match.group("value"))
         if parsed is None or parsed < 10:
             return match.group(0)
@@ -725,13 +722,23 @@ def _normalize_cardinal_phrases(text: str) -> str:
     return _CARDINAL_PHRASE_RE.sub(replace, text)
 
 
-def _protect_explicit_digit_commands(text: str) -> str:
+def _protect_explicit_number_commands(text: str) -> str:
     def replace(match: re.Match[str]) -> str:
-        value = match.group(1).casefold()
-        rendered = _NUMERAL_VALUES.get(value, value)
-        return _DIGIT_COMMAND_MARKERS[int(rendered)]
+        value = match.group("value")
+        # A prose conjunction belongs to the words after the number.
+        suffix = re.search(r"\s+and$", value, re.IGNORECASE)
+        if suffix is not None:
+            value = value[: suffix.start()]
+        parsed = int(value.replace(",", "")) if value[0].isdigit() else _parse_cardinal(value)
+        if parsed is None:
+            return match.group(0)
+        rendered = "".join(
+            _DIGIT_COMMAND_MARKERS[int(character)] if character.isdigit() else character
+            for character in _format_cardinal(parsed)
+        )
+        return rendered + (suffix.group(0) if suffix is not None else "")
 
-    return _DIGIT_COMMAND_RE.sub(replace, text)
+    return _NUMBER_COMMAND_RE.sub(replace, text)
 
 
 def _render_explicit_digit_commands(text: str) -> str:
@@ -742,7 +749,7 @@ def _render_explicit_digit_commands(text: str) -> str:
 
 def normalize_spoken_numbers(text: str) -> str:
     """Normalize versions, times, and conventional spoken cardinal numbers."""
-    text = _protect_explicit_digit_commands(text)
+    text = _protect_explicit_number_commands(text)
 
     def replace_version(match: re.Match[str]) -> str:
         components = re.split(
@@ -936,7 +943,11 @@ class StreamingNumberNormalizer:
             value = _parse_cardinal(number)
             if value is not None and value >= 10:
                 self._pending = number
-                return normalize_spoken_numbers(stripped[: trailing.start()].rstrip())
+                prefix = stripped[: trailing.start()]
+                command = _NUMBER_COMMAND_PREFIX_RE.search(prefix)
+                if command is not None:
+                    prefix = prefix[: command.start()]
+                return normalize_spoken_numbers(prefix.rstrip())
         return normalize_spoken_numbers(stripped)
 
 
