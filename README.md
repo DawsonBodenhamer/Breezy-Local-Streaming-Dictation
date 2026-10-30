@@ -105,16 +105,8 @@ Examples below start on a fresh line, with the default capitalization choices on
       <td><code>The combination is one two three four</code> (separate digits less than 10 stay as words)</td>
     </tr>
     <tr>
-      <td><code>number seven</code> or <code>digit seven</code></td>
-      <td><code>7</code>, always a literal numeral; both commands also support larger numbers</td>
-    </tr>
-    <tr>
-      <td><code>number of things</code></td>
-      <td><code>Number of things</code> (ordinary phrases stay as words)</td>
-    </tr>
-    <tr>
-      <td><code>digit one digit two digit three</code></td>
-      <td><code>1 2 3</code></td>
+      <td><code>number seven</code> or <code>a number of items</code> or <code>digit fifty-two</code></td>
+      <td><code>7</code> or <code>A number of items</code> or <code>52</code></td>
     </tr>
     <tr>
       <td><code>quote local first close quote</code></td>

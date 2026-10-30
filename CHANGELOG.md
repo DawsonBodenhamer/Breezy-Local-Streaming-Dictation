@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Easier spoken numbers**
   - Use "number" as an easier alternative to the existing "digit" command: "number three" types "3", just like "digit three". Both commands also support larger numbers, such as "number twelve" or "digit twelve" for "12"; phrases such as "number of things" stay as words.
 
+### Fixed
+- **Times inside sentences**
+  - Keep spoken times consistent within a sentence: "let's do five thirty-seven" types "let's do 5:37" instead of "let's do 537".
+
 ---
 
 ## [1.0.12] - 2026-10-26

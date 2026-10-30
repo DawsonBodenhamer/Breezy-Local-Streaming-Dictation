@@ -164,7 +164,7 @@ _AMBIGUOUS_INTEGER_RE = re.compile(
     r"^\s*(?:\d{1,3}(?:,\d{3})+|\d+)[.!?]?\s*$"
 )
 _AMBIGUOUS_MIXED_INTEGER_RE = re.compile(
-    r"(?<![\w.:])(?P<value>\d{3,4})(?![\w.:])"
+    r"(?<![\w.:,])(?P<value>\d{3,4}|\d{1,2}\.\d{2})(?![\w.:,])"
 )
 _AMBIGUOUS_SINGLE_DIGIT_RUN_RE = re.compile(
     r"(?<![\w.])(?P<value>[0-9](?:[ \t]+[0-9]){2,})(?![\w.])"
@@ -1618,19 +1618,28 @@ class LocalEngine(TranscriptionEngine):
                 metadata["reason"] = "candidate_class_mismatch"
             elif match_count != 1 or recovered_match is None:
                 metadata["reason"] = "candidate_match_count"
+            elif shape == "mixed_integer":
+                assert rendered is not None
+                # Keep the original sentence; only matching time evidence can
+                # replace its numeric span, regardless of retry prose drift.
+                first_value = int(first_match.group("value").replace(".", ""))
+                time_value = int(rendered.replace(":", ""))
+                value_agreement = first_value == time_value
+                metadata["digit_value_agreement"] = value_agreement
+                if value_agreement:
+                    metadata["acceptance"] = "accepted"
+                    metadata["reason"] = "eligible"
+                    recovered = (
+                        analysis_first_pass[: first_match.start()]
+                        + rendered
+                        + analysis_first_pass[first_match.end() :]
+                    )
+                else:
+                    metadata["reason"] = "time_value_mismatch"
             elif not left_aligned:
                 metadata["reason"] = "left_context_mismatch"
             elif not right_aligned:
                 metadata["reason"] = "right_context_mismatch"
-            elif shape == "mixed_integer":
-                assert rendered is not None
-                metadata["acceptance"] = "accepted"
-                metadata["reason"] = "eligible"
-                recovered = (
-                    analysis_first_pass[: first_match.start()]
-                    + rendered
-                    + analysis_first_pass[first_match.end() :]
-                )
             else:
                 first_digits = first_match.group("value").split()
                 recovered_words = recovered_match.group("value").casefold().split()
