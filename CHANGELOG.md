@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.14] - Unreleased
 
+### Fixed
+- **Capitalization after Backspace**
+  - Continuing a sentence after saying "backspace" to remove its period now stays lowercase, even when the command and continuation are spoken together.
+
 ---
 
 ## [1.0.13] - 2026-10-30

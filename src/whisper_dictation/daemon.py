@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1285,6 +1286,40 @@ class DictationDaemon:
             binding_fn=_foreground_target_binding,
         )
 
+    def _segments_with_current_context(
+        self,
+        segments: list[SpokenSegment],
+        initial_context: CaretContext,
+        boundary: str,
+    ) -> Iterator[tuple[SpokenSegment, CaretContext]]:
+        """Reread after each segment without following focus to another target."""
+        original_identity = _target_identity(initial_context.target)
+        context = initial_context
+        for index, segment in enumerate(segments):
+            if index:
+                acquired = self._acquire_target()
+                context = acquired.context
+                if not context.injection_allowed:
+                    self._reset_number_normalizer()
+                    self._discard_manual_line_break()
+                    _log_focus_rejection(
+                        context,
+                        boundary,
+                        attempts=acquired.attempts,
+                        stability_reason=acquired.stability_reason,
+                    )
+                    self._record_outcome(OUTCOME_FOCUS_REJECTED)
+                    _log_utterance_outcome(OUTCOME_FOCUS_REJECTED, boundary)
+                    return
+                if _target_binding_changed(original_identity, _target_identity(context.target)):
+                    self._reset_number_normalizer()
+                    self._discard_manual_line_break()
+                    self._record_outcome(OUTCOME_FOCUS_CHANGED)
+                    _log_utterance_outcome(OUTCOME_FOCUS_CHANGED, boundary)
+                    self._notify_focus_change()
+                    return
+            yield segment, context
+
     def _dispatch_spoken_action(
         self,
         action: str,
@@ -1345,6 +1380,7 @@ class DictationDaemon:
                     send_backspace(caret_context.target)
                 with self._lock:
                     self._target_injection_session = None
+                    self._pending_spoken_boundary = "none"
             elif action == "spacebar":
                 for _ in range(count):
                     send_spacebar(caret_context.target)
@@ -1586,7 +1622,9 @@ class DictationDaemon:
             return
 
         any_injected = False
-        for seg in preprocessed_segments:
+        for seg, caret_context in self._segments_with_current_context(
+            preprocessed_segments, caret_context, "websocket_stream"
+        ):
             if seg.kind == "action":
                 self._dispatch_spoken_action(
                     seg.action,
@@ -1872,7 +1910,9 @@ class DictationDaemon:
                 self._schedule_pending_number_flush(caret_context.target)
 
             any_injected = False
-            for seg in segments:
+            for seg, caret_context in self._segments_with_current_context(
+                segments, caret_context, "local"
+            ):
                 if seg.kind == "action":
                     self._dispatch_spoken_action(
                         seg.action,
@@ -2093,7 +2133,9 @@ class DictationDaemon:
                         return
 
                     any_injected = False
-                    for seg in segments:
+                    for seg, caret_context in self._segments_with_current_context(
+                        segments, caret_context, "websocket_pending"
+                    ):
                         if seg.kind == "action":
                             self._dispatch_spoken_action(
                                 seg.action,
@@ -2245,7 +2287,9 @@ class DictationDaemon:
                     self._notify_focus_change()
                     return
 
-                for seg in segments:
+                for seg, caret_context in self._segments_with_current_context(
+                    segments, caret_context, "websocket_batch"
+                ):
                     if seg.kind == "action":
                         self._dispatch_spoken_action(
                             seg.action,
